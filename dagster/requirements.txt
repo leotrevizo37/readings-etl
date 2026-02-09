@@ -1,0 +1,17 @@
+dagster
+dagster-webserver
+dagster-graphql
+dagster-pyspark
+dagster-postgres
+dagster-docker
+pyspark==4.0.1
+polars
+pymssql
+adlfs
+pyarrow
+pyodbc
+python-dotenv
+SQLAlchemy
+grpcio==1.60.0
+grpcio-health-checking==1.60.0
+grpclib==0.4.6
