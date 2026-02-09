@@ -1,0 +1,18 @@
+name: validate-compose.yml
+
+on:
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+
+jobs:
+  compose-validate:
+    runs-on: ubuntu-latest
+    if: startsWith(github.head_ref, 'init/') || startsWith(github.head_ref, 'feat/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env for validation
+        run: cp compose/.env.example compose/.env
+
+      - name: Validate compose
+        run: docker compose -f compose/docker-compose.yml config
