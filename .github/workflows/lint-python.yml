@@ -1,0 +1,39 @@
+name: ci-python.yml
+
+on:
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    if: startsWith(github.head_ref, 'init/') || startsWith(github.head_ref, 'feat/')
+    defaults:
+      run:
+        working-directory: dagster
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: dagster/requirements.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install ruff pytest
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Tests
+        run: |
+          pytest -q || code=$?
+          if [ "${code:-0}" -eq 5 ]; then
+            echo "No tests collected (exit code 5). Skipping."
+            exit 0
+          fi
+          exit "${code:-0}"

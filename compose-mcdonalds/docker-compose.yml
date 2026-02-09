@@ -1,0 +1,239 @@
+x-dagster-common: &dagster_common
+  env_file:
+    - .env
+  environment:
+    DAGSTER_HOME: /opt/dagster/dagster_home
+    PYTHONPATH: /opt/dagster/app/project/src
+  working_dir: /opt/dagster/app/project
+  volumes:
+    - ../dagster/dagster_home:/opt/dagster/dagster_home
+    - ../dagster/project:/opt/dagster/app/project
+    - ../workspace.yaml:/opt/dagster/app/workspace.yaml:ro
+    - spark-data:/data
+  networks:
+    - project-dagster
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  sql-init:
+    image: mcr.microsoft.com/mssql-tools
+    container_name: sql-init
+    env_file:
+      - .env
+    networks:
+      - dagster
+    volumes:
+      - ../sql/init:/sql/init:ro
+      - ../sql/procedures:/sql/procedures:ro
+    command: >
+      sh -c '
+        set -eu;
+
+        echo "Waiting for SQL Server at ${MSSQL_HOST}:${MSSQL_PORT:-1433}...";
+        until /opt/mssql-tools/bin/sqlcmd \
+                  -S ${MSSQL_HOST},${MSSQL_PORT:-1433} \
+                  -U ${MSSQL_USER} -P ${MSSQL_PASSWORD} \
+                  -Q "SELECT 1" >/dev/null 2>&1; do
+          echo "SQL Server not ready, retrying in 5s...";
+          sleep 5;
+        done;
+        echo "Running SQL init scripts from /sql/init and /sql/procedures...";
+        for f in /sql/init/*.sql; do
+          [ -e "$$f" ] || continue;
+          echo "==> $$f";
+          /opt/mssql-tools/bin/sqlcmd \
+              -S ${MSSQL_HOST},${MSSQL_PORT:-1433} \
+              -U ${MSSQL_USER} -P ${MSSQL_PASSWORD} \
+              -d "${APP_DB}" \
+              -b -i "$$f";
+        done;
+        for f in /sql/procedures/*.sql; do
+          [ -e "$$f" ] || continue;
+          echo "==> $$f";
+          /opt/mssql-tools/bin/sqlcmd \
+              -S ${MSSQL_HOST},${MSSQL_PORT:-1433} \
+              -U ${MSSQL_USER} -P ${MSSQL_PASSWORD} \
+              -d "${APP_DB}" \
+              -b -i "$$f";
+        done;
+        echo "SQL init completed.";
+      '
+    restart: "no"
+
+  dagster-postgres:
+    image: postgres:16
+    container_name: project-dagster-postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${DAGSTER_PG_USER}
+      POSTGRES_PASSWORD: ${DAGSTER_PG_PASSWORD}
+      POSTGRES_DB: ${DAGSTER_PG_DB}
+    volumes:
+      - dagster_postgres_data:/var/lib/postgresql/data
+    networks:
+      - project-dagster
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DAGSTER_PG_USER} -d ${DAGSTER_PG_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  dagster-user-code:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: project-dagster-user-code
+    <<: *dagster_common
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      PYTHONPATH: /opt/dagster/app/project/src
+      APP_DB: ${APP_DB}
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT:-1433}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+    ports:
+      - "${USER_CODE_PORT:-4000}:4001"
+    command: [
+      "dagster", "api", "grpc",
+      "-h", "0.0.0.0",
+      "-p", "4001",
+      "-m", "project.definitions"
+    ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "dagster api grpc-health-check -p 4001 -h 127.0.0.1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  dagster-web:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: project-dagster-web
+    <<: *dagster_common
+    depends_on:
+      dagster-user-code:
+        condition: service_healthy
+      dagster-postgres:
+        condition: service_healthy
+      sql-init:
+        condition: service_completed_successfully
+    ports:
+      - "${DAGSTER_WEB_PORT:-3000}:3000"
+    command: [
+      "dagster-webserver",
+      "-h", "0.0.0.0",
+      "-p", "3000",
+      "-w", "/opt/dagster/app/workspace.yaml"
+    ]
+
+  dagster-daemon:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: project-dagster-daemon
+    <<: *dagster_common
+    depends_on:
+      dagster-user-code:
+        condition: service_healthy
+      dagster-postgres:
+        condition: service_healthy
+    command: [
+      "dagster-daemon", "run",
+      "-w", "/opt/dagster/app/workspace.yaml"
+    ]
+
+  spark-master:
+    user: "0:0"
+    build:
+      context: ..
+      dockerfile: spark/Dockerfile
+    container_name: project-spark-master
+    depends_on:
+      spark-data-init:
+        condition: service_completed_successfully
+    command: [
+      "/opt/spark/bin/spark-class",
+      "org.apache.spark.deploy.master.Master"
+    ]
+    ports:
+      - "${SPARK_MASTER_UI_PORT:-8080}:8080"
+      - "${SPARK_MASTER_PORT:-7077}:7077"
+    volumes:
+      - spark-data:/data
+    restart: unless-stopped
+    networks:
+      - project-dagster
+    healthcheck:
+      test: [
+        "CMD-SHELL",
+        "python -c 'import socket,sys; s=socket.socket(); s.settimeout(2); s.connect((\"localhost\",7077)); s.close()'"
+      ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  spark-worker:
+    user: "0:0"
+    build:
+      context: ..
+      dockerfile: spark/Dockerfile
+    depends_on:
+      spark-master:
+        condition: service_started
+      spark-data-init:
+        condition: service_completed_successfully
+    environment:
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEM}
+    command:
+      [
+        "/opt/spark/bin/spark-class",
+        "org.apache.spark.deploy.worker.Worker",
+        "spark://spark-master:7077"
+      ]
+    volumes:
+      - spark-data:/data
+    networks:
+      - project-dagster
+    restart: unless-stopped
+
+  spark-data-init:
+    image: alpine:3.20
+    user: "0:0"
+    container_name: project-spark-data-init
+    volumes:
+      - spark-data:/data
+    command: ["sh", "-c", "mkdir -p /data/dagster_io/spark_dfs && chmod -R 777 /data"]
+    restart: "no"
+    networks:
+      - project-dagster
+
+volumes:
+  spark-data:
+  dagster_postgres_data:
+
+networks:
+  project-dagster:
+    driver: bridge

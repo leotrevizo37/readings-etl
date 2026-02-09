@@ -1,0 +1,17 @@
+name: docker-image.yml
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: startsWith(github.head_ref, 'init/') || startsWith(github.head_ref, 'feat/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Dagster Docker image
+        run: docker build -f dagster/Dockerfile -t my-image-name:${{ github.sha }} .
