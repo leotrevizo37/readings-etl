@@ -7,9 +7,9 @@ ENV ACCEPT_EULA=Y \
     DAGSTER_HOME=/opt/dagster/dagster_home \
     PYTHONPATH=/opt/dagster/app/src
 
-RUN mkdir -p "${DAGSTER_HOME}" /opt/dagster/app/project
+RUN mkdir -p "${DAGSTER_HOME}" /opt/dagster/app/projectA /opt/dagster/app/projectB /opt/dagster/app/projectC
 
-WORKDIR /opt/dagster/app/project
+WORKDIR /opt/dagster/app
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -33,7 +33,9 @@ RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
 ENV PATH="/opt/mssql-tools18/bin:${PATH}"
 
 COPY dagster/requirements.txt /tmp/requirements.txt
-COPY dagster/project /opt/dagster/app/project
+COPY dagster/projectA /opt/dagster/app/projectA
+COPY dagster/projectB /opt/dagster/app/projectB
+COPY dagster/projectC /opt/dagster/app/projectC
 
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir -r /tmp/requirements.txt

@@ -1,5 +1,13 @@
 load_from:
   - grpc_server:
-      host: project-dagster-user-code
+      host: projectA-dagster-user-code
       port: 4001
-      location_name: project
+      location_name: projectA
+  - grpc_server:
+      host: projectB-dagster-user-code
+      port: 4002
+      location_name: projectB
+  - grpc_server:
+      host: projectC-dagster-user-code
+      port: 4003
+      location_name: projectC

@@ -1,0 +1,392 @@
+x-dagster-common: &dagster_common
+  env_file:
+    - .env
+  environment:
+    DAGSTER_HOME: /opt/dagster/dagster_home
+  working_dir: /opt/dagster/app
+  volumes:
+    - ../dagster/dagster_home:/opt/dagster/dagster_home
+    - ../dagster/projectA:/opt/dagster/app/projectA
+    - ../dagster/projectB:/opt/dagster/app/projectB
+    - ../dagster/projectC:/opt/dagster/app/projectC
+    - ../workspace.yaml:/opt/dagster/app/workspace.yaml:ro
+    - spark-data:/data
+  networks:
+    - data-dagster
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  sql-init:
+    image: mcr.microsoft.com/mssql-tools
+    container_name: data-sql-init
+    env_file:
+      - .env
+    networks:
+      - data-dagster
+    volumes:
+      - ../sql/init:/sql/init:ro
+      - ../sql/procedures:/sql/procedures:ro
+      - ../sql/user_codes:/sql/user_codes:ro
+    command:
+      - sh
+      - -c
+      - |
+          set -eu
+
+          SQLCMD=/opt/mssql-tools/bin/sqlcmd
+
+          echo "Waiting for SQL Server at $${MSSQL_HOST}:$${MSSQL_PORT:-1433}..."
+          until "$$SQLCMD" \
+                    -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
+                    -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
+                    -Q "SELECT 1" >/dev/null 2>&1; do
+            echo "SQL Server not ready, retrying in 5s..."
+            sleep 5
+          done
+
+          USER_CODE_DBS="$${USER_CODE_DBS:-projectA=projectA projectB=projectB projectC=projectC}"
+
+          for db_spec in $$USER_CODE_DBS; do
+            case "$$db_spec" in
+              *=*)
+                USER_CODE="$${db_spec%%=*}"
+                APP_DB="$${db_spec#*=}"
+                ;;
+              *)
+                USER_CODE="$$db_spec"
+                APP_DB="$$db_spec"
+                ;;
+            esac
+
+            if [ -z "$$USER_CODE" ] || [ -z "$$APP_DB" ]; then
+              echo "Invalid USER_CODE_DBS entry: '$$db_spec'"
+              exit 1
+            fi
+
+            APP_DB_SQLSTRING=$$(printf "%s" "$$APP_DB" | sed "s/'/''/g")
+            APP_DB_IDENTIFIER=$$(printf "%s" "$$APP_DB" | sed "s/]/]]/g")
+
+            echo "Ensuring database $$APP_DB exists for user_code $$USER_CODE..."
+            "$$SQLCMD" \
+                -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
+                -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
+                -d master \
+                -b \
+                -Q "IF DB_ID(N'$$APP_DB_SQLSTRING') IS NULL EXEC(N'CREATE DATABASE [$$APP_DB_IDENTIFIER]');"
+
+            echo "Running SQL init scripts for $$USER_CODE from /sql/init and /sql/procedures..."
+            for f in /sql/init/*.sql; do
+              [ -e "$$f" ] || continue
+              echo "==> [$$APP_DB] $$f"
+              "$$SQLCMD" \
+                  -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
+                  -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
+                  -d"$$APP_DB" \
+                  -b -i "$$f"
+            done
+
+            for f in /sql/procedures/*.sql; do
+              [ -e "$$f" ] || continue
+              echo "==> [$$APP_DB] $$f"
+              "$$SQLCMD" \
+                  -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
+                  -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
+                  -d"$$APP_DB" \
+                  -b -i "$$f"
+            done
+
+            for f in /sql/user_codes/"$$USER_CODE"/init/*.sql; do
+              [ -e "$$f" ] || continue
+              echo "==> [$$APP_DB] $$f"
+              "$$SQLCMD" \
+                  -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
+                  -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
+                  -d"$$APP_DB" \
+                  -b -i "$$f"
+            done
+
+            for f in /sql/user_codes/"$$USER_CODE"/procedures/*.sql; do
+              [ -e "$$f" ] || continue
+              echo "==> [$$APP_DB] $$f"
+              "$$SQLCMD" \
+                  -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
+                  -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
+                  -d"$$APP_DB" \
+                  -b -i "$$f"
+            done
+          done
+
+          echo "SQL init completed."
+    restart: "no"
+
+  dagster-postgres:
+    image: postgres:16
+    container_name: data-dagster-postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${DAGSTER_PG_USER}
+      POSTGRES_PASSWORD: ${DAGSTER_PG_PASSWORD}
+      POSTGRES_DB: ${DAGSTER_PG_DB}
+    volumes:
+      - dagster_postgres_data:/var/lib/postgresql/data
+    networks:
+      - data-dagster
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DAGSTER_PG_USER} -d ${DAGSTER_PG_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  dagster-user-code-projectA:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: projectA-dagster-user-code
+    <<: *dagster_common
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    working_dir: /opt/dagster/app/projectA
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      PYTHONPATH: /opt/dagster/app/projectA/src
+      APP_DB: ${PROJECTA_DB:-projectA}
+      DIM_DB: ${PROJECTA_DIM_DB:-projectA}
+      ADLS_CONTAINER_NAME: ${PROJECTA_ADLS_CONTAINER_NAME:-projectA}
+      FACTREADINGS_OVERLAP_HOURS: ${PROJECTA_DEFAULT_FACTREADINGS_OVERLAP_HOURS:-12}
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT:-1433}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+    ports:
+      - "${PROJECTA_USER_CODE_PORT:-4001}:4001"
+    command: [
+      "dagster", "api", "grpc",
+      "-h", "0.0.0.0",
+      "-p", "4001",
+      "-m", "projectA.definitions"
+    ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "dagster api grpc-health-check -p 4001 -h 127.0.0.1"
+        ]
+      interval: 20s
+      timeout: 25s
+      retries: 10
+      start_period: 20s
+
+  dagster-user-code-projectB:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: projectB-dagster-user-code
+    <<: *dagster_common
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    working_dir: /opt/dagster/app/projectB
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      PYTHONPATH: /opt/dagster/app/projectB/src
+      APP_DB: ${PROJECTB_DB:-projectB}
+      DIM_DB: ${PROJECTB_DIM_DB:-projectB}
+      ADLS_CONTAINER_NAME: ${PROJECTB_ADLS_CONTAINER_NAME:-projectB}
+      FACTREADINGS_OVERLAP_HOURS: ${PROJECTB_DEFAULT_FACTREADINGS_OVERLAP_HOURS:-12}
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT:-1433}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+    ports:
+      - "${PROJECTB_USER_CODE_PORT:-4002}:4002"
+    command: [
+      "dagster", "api", "grpc",
+      "-h", "0.0.0.0",
+      "-p", "4002",
+      "-m", "projectB.definitions"
+    ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "dagster api grpc-health-check -p 4002 -h 127.0.0.1"
+        ]
+      interval: 10s
+      timeout: 25s
+      retries: 10
+      start_period: 30s
+
+  dagster-user-code-projectC:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: projectC-dagster-user-code
+    <<: *dagster_common
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    working_dir: /opt/dagster/app/projectC
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      PYTHONPATH: /opt/dagster/app/projectC/src
+      APP_DB: ${PROJECTC_DB:-projectC}
+      DIM_DB: ${PROJECTC_DIM_DB:-projectC}
+      ADLS_CONTAINER_NAME: ${PROJECTC_ADLS_CONTAINER_NAME:-projectC}
+      FACTREADINGS_OVERLAP_HOURS: ${PROJECTC_DEFAULT_FACTREADINGS_OVERLAP_HOURS:-12}
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT:-1433}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+    ports:
+      - "${PROJECTC_USER_CODE_PORT:-4003}:4003"
+    command: [
+      "dagster", "api", "grpc",
+      "-h", "0.0.0.0",
+      "-p", "4003",
+      "-m", "projectC.definitions"
+    ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "dagster api grpc-health-check -p 4003 -h 127.0.0.1"
+        ]
+      interval: 20s
+      timeout: 25s
+      retries: 10
+      start_period: 40s
+
+  dagster-web:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: data-dagster-web
+    <<: *dagster_common
+    depends_on:
+      dagster-user-code-projectA:
+        condition: service_healthy
+      dagster-user-code-projectB:
+        condition: service_healthy
+      dagster-user-code-projectC:
+        condition: service_healthy
+      dagster-postgres:
+        condition: service_healthy
+      sql-init:
+        condition: service_completed_successfully
+    ports:
+      - "${DAGSTER_WEB_PORT:-3000}:3000"
+    command: [
+      "dagster-webserver",
+      "-h", "0.0.0.0",
+      "-p", "3000",
+      "-w", "/opt/dagster/app/workspace.yaml"
+    ]
+
+  dagster-daemon:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: data-dagster-daemon
+    <<: *dagster_common
+    depends_on:
+      dagster-user-code-projectA:
+        condition: service_healthy
+      dagster-user-code-projectB:
+        condition: service_healthy
+      dagster-user-code-projectC:
+        condition: service_healthy
+      dagster-postgres:
+        condition: service_healthy
+      sql-init:
+        condition: service_completed_successfully
+    command: [
+      "dagster-daemon", "run",
+      "-w", "/opt/dagster/app/workspace.yaml"
+    ]
+
+  spark-master:
+    user: "0:0"
+    build:
+      context: ..
+      dockerfile: spark/Dockerfile
+    container_name: data-spark-master
+    depends_on:
+      spark-data-init:
+        condition: service_completed_successfully
+    command: [
+      "/opt/spark/bin/spark-class",
+      "org.apache.spark.deploy.master.Master"
+    ]
+    ports:
+      - "${SPARK_MASTER_UI_PORT:-8080}:8080"
+      - "${SPARK_MASTER_PORT:-7077}:7077"
+    volumes:
+      - spark-data:/data
+    restart: unless-stopped
+    networks:
+      - data-dagster
+    healthcheck:
+      test: [
+        "CMD-SHELL",
+        "python3 -c 'import os,socket; host=os.popen(\"hostname -i\").read().strip().split()[0]; s=socket.socket(); s.settimeout(2); s.connect((host,7077)); s.close()'"
+      ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  spark-worker:
+    user: "0:0"
+    build:
+      context: ..
+      dockerfile: spark/Dockerfile
+    depends_on:
+      spark-master:
+        condition: service_started
+      spark-data-init:
+        condition: service_completed_successfully
+    environment:
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEM}
+    command:
+      [
+        "/opt/spark/bin/spark-class",
+        "org.apache.spark.deploy.worker.Worker",
+        "spark://spark-master:7077"
+      ]
+    volumes:
+      - spark-data:/data
+    networks:
+      - data-dagster
+    restart: unless-stopped
+
+  spark-data-init:
+    image: alpine:3.20
+    user: "0:0"
+    container_name: spark-data-init
+    volumes:
+      - spark-data:/data
+    command: ["sh", "-c", "mkdir -p /data/dagster_io/spark_dfs && chmod -R 777 /data"]
+    restart: "no"
+    networks:
+      - data-dagster
+
+volumes:
+  spark-data:
+  dagster_postgres_data:
+
+networks:
+  data-dagster:
+    driver: bridge
