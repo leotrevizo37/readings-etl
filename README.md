@@ -3,17 +3,8 @@ Serving layer for processing and preparing data intended for consumption in BI s
 developed with Spark and integrating automated extraction, transformation, and load (ETL).
 
 [![docker-image.yml](https://github.com/leotrevizo37/readings-etl/actions/workflows/validate-docker-image.yml/badge.svg)](https://github.com/leotrevizo37/readings-etl/actions/workflows/validate-docker-image.yml)
-[![ci-python.yml](https://github.com/leotrevizo37/readings-etl/actions/workflows/lint-python.yml/badge.svg)](https://github.com/leotrevizo37/readings-etl/actions/workflows/lint-python.yml)
 [![validate-compose.yml](https://github.com/leotrevizo37/readings-etl/actions/workflows/validate-compose.yml/badge.svg)](https://github.com/leotrevizo37/readings-etl/actions/workflows/validate-compose.yml)
 [![lint-sql.yml](https://github.com/leotrevizo37/readings-etl/actions/workflows/lint-sql.yml/badge.svg)](https://github.com/leotrevizo37/readings-etl/actions/workflows/lint-sql.yml)
-
-# BI Serving Layer (DUMA)
-The goal is to speed up the behavior and response times of agentic tools by preparing a 
-fast and constantly available cache for slow queries against a data lake, 
-which would also present a small file size problem. This is solved with:
-- SQL Server (T-SQL schema + stored procedures)
-- Dagster (assets/jobs, scheduling/execution, orchestration)
-- Spark (master/workers)
 
 ## Scope
 This repository provides:
@@ -21,11 +12,8 @@ This repository provides:
 - A Spark master running in containers.
 - Automation/orchestration of a multi-node Spark cluster.
 - Integration with the ADLS data lake.
-- Transformation of data lake Parquet files into a relational table (serving layer).
-- Data preparation/transformations that feed agentic tools.
 Out of scope:
 - Complex ETLs that are not required by the agentic tools.
-- One single native spark-worker.
 
 ## Repository Structure
 - `compose/`
