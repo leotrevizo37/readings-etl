@@ -1,9 +1,9 @@
-dagster
-dagster-webserver
-dagster-graphql
-dagster-pyspark
-dagster-postgres
-dagster-docker
+dagster==1.12.6
+dagster-webserver==1.12.6
+dagster-graphql==1.12.6
+dagster-pyspark==0.28.6
+dagster-postgres==0.28.6
+dagster-docker==0.28.6
 pyspark==4.0.1
 polars
 pymssql

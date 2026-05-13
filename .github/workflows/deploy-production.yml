@@ -1,0 +1,50 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    environment: production
+    concurrency:
+      group: data-etls-production
+      cancel-in-progress: false
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - data-etls-production
+      - production-deploy
+
+    steps:
+      - name: Update repo, refresh env and restart production containers
+        shell: bash
+        env:
+          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+        run: |
+          set -euo pipefail
+
+          cd /srv/readings-etl
+
+          git fetch origin
+          git reset --hard origin/main
+
+          test -n "${PRODUCTION_ENV_FILE:-}"
+
+          umask 077
+          printf '%s\n' "$PRODUCTION_ENV_FILE" > compose/.env.next
+
+          docker compose \
+            --env-file compose/.env.next \
+            -f compose/docker-compose.yml \
+            config --quiet
+
+          cp compose/.env compose/.env.backup 2>/dev/null || true
+          mv compose/.env.next compose/.env
+
+          docker compose \
+            --env-file compose/.env \
+            -f compose/docker-compose.yml \
+            up -d --build

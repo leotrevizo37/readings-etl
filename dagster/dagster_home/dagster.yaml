@@ -53,3 +53,21 @@ schedule_storage:
         env: DAGSTER_PG_DB
       port:
         env: DAGSTER_PG_PORT
+
+retention:
+  schedule:
+    purge_after_days: 5
+  sensor:
+    purge_after_days:
+      skipped: 1
+      success: 5
+      failure: 5
+
+concurrency:
+  runs:
+    max_concurrent_runs: 1
+    tag_concurrency_limits:
+      - key: "job_type"
+        limit: 1
+        value:
+          applyLimitPerUniqueValue: true

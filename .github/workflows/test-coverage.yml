@@ -1,0 +1,49 @@
+name: test-coverage.yml
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  test-coverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dagster/projectA
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            dagster/requirements.txt
+            dagster/projectA/pyproject.toml
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r ../requirements.txt
+          pip install coverage pytest
+          pip install -e .
+
+      - name: Run tests with coverage
+        env:
+          PYTHONWARNINGS: ignore::ResourceWarning
+        run: |
+          python -m coverage run --source=src/projectA -m unittest discover tests -p "test_*.py"
+          python -m coverage report --show-missing
+          python -m coverage xml -o coverage.xml
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: dagster/projectA/coverage.xml
+          if-no-files-found: error
