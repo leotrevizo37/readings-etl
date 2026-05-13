@@ -1,0 +1,3 @@
+services:
+  dagster-daemon:
+    command: ["sh", "-c", "sleep infinity"]
