@@ -18,9 +18,7 @@ from pyspark.sql.types import (
 )
 
 
-PROJECT_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(PROJECT_SRC) not in sys.path:
-    sys.path.insert(0, str(PROJECT_SRC))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from projectD.defs.transformations.lecturas_time_hours import (
     lecturas_time_hours,
@@ -32,6 +30,9 @@ from projectD.defs.transformations.stats_calculator import (
 from projectD.operations_filters import (
     limit_operations_rows_to_closed_hours,
 )
+
+
+PROJECT_SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 warnings.simplefilter("ignore", ResourceWarning)

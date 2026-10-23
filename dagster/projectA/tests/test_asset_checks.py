@@ -3,9 +3,7 @@ import unittest
 from pathlib import Path
 
 
-PROJECT_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(PROJECT_SRC) not in sys.path:
-    sys.path.insert(0, str(PROJECT_SRC))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from dagster import AssetCheckSeverity
 from projectA.defs.asset_checks import (

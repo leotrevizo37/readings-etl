@@ -8,9 +8,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StructField, StructType
 
 
-PROJECT_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(PROJECT_SRC) not in sys.path:
-    sys.path.insert(0, str(PROJECT_SRC))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from projectA.defs.resources.spark import (
     AUDIENCIA_SCHEMA,
