@@ -5,13 +5,13 @@ dagster-pyspark==0.29.26
 dagster-postgres==0.29.26
 dagster-docker==0.29.26
 pyspark==4.2.0
-polars==1.44.2
+polars==2.0.0
 pymssql==2.4.2
 adlfs==2026.8.0
-pyarrow==25.0.1
+pyarrow==26.0.0
 pyodbc==5.3.0
 python-dotenv==1.2.4
-SQLAlchemy==2.1.4
+SQLAlchemy==2.1.5
 grpcio==1.84.0
 grpcio-health-checking==1.81.0
 grpclib==0.4.6
