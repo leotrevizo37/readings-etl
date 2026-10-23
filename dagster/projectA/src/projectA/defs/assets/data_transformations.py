@@ -5,7 +5,7 @@ from dagster import asset, AssetKey
 @asset(
     name="data_transformations",
     deps=[
-        AssetKey(["projectA", "dwh_dimsidonproddimensions"]),
+        AssetKey(["projectA", "dwh_dimtelemetryproddimensions"]),
         AssetKey(["projectA", "dwh_factlecturas"]),
     ],
     group_name="projectA",

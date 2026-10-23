@@ -1,21 +1,28 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from dagster import In, Out, op, graph_asset, MaterializeResult
+from dagster import In, Out, op, graph_asset, MaterializeResult, RetryPolicy, RetryRequested
 from pyspark import StorageLevel
 from time import perf_counter
 
 from ..resources import SqlServerResource, SparkResource
 
+FACTLECTURAS_MAX_RETRIES = 3
+FACTLECTURAS_RETRY_DELAY_SECONDS = 60
+FACTLECTURAS_RETRY_POLICY = RetryPolicy(
+    max_retries=FACTLECTURAS_MAX_RETRIES,
+    delay=FACTLECTURAS_RETRY_DELAY_SECONDS,
+)
+
 
 def _truncate_to_seconds(dt: datetime) -> datetime:
     return dt.replace(microsecond=0)
-
 
 @op(
     required_resource_keys={"sqlserver"},
     ins={},
     out=Out(Dict[str, Any]),
+    retry_policy=FACTLECTURAS_RETRY_POLICY,
 )
 def start_run_and_get_range_op(context) -> Dict[str, Any]:
     start_time = perf_counter()
@@ -45,6 +52,7 @@ def start_run_and_get_range_op(context) -> Dict[str, Any]:
     required_resource_keys={"sqlserver", "spark"},
     ins={"window": In(Dict[str, Any])},
     out=Out(Dict[str, Any]),
+    retry_policy=FACTLECTURAS_RETRY_POLICY,
 )
 def delete_and_load_window_op(context, window: Dict[str, Any]) -> Dict[str, Any]:
     sql: SqlServerResource = context.resources.sqlserver
@@ -66,11 +74,13 @@ def delete_and_load_window_op(context, window: Dict[str, Any]) -> Dict[str, Any]
     error_message: Optional[str] = None
     max_time_span: Optional[datetime] = None
     row_count = 0
+    retry_number = getattr(context, "retry_number", 0)
 
+    df = None
     try:
         df = spark_res.read_lecturas_range(from_utc, to_utc)
         df = df.persist(StorageLevel.MEMORY_AND_DISK)
-        if df.rdd.isEmpty():
+        if len(df.head(1)) == 0:
             context.log.info("No rows found in Data Lake for window " + str(from_utc) + " to " + str(to_utc))
             succeeded = True
         else:
@@ -81,7 +91,33 @@ def delete_and_load_window_op(context, window: Dict[str, Any]) -> Dict[str, Any]
     except Exception as ex:
         error_message = str(ex)
         context.log.error("Error loading FactLecturas window: " + error_message)
+        try:
+            sql.delete_range(
+                schema_name="dwh",
+                table_name="FactLecturas",
+                time_column="TimeSpan",
+                from_utc=from_utc,
+                to_utc=to_utc
+            )
+        except Exception as cleanup_ex:
+            context.log.warning(
+                "Could not clean partial FactLecturas rows after failure: %s",
+                cleanup_ex,
+            )
+        if retry_number < FACTLECTURAS_MAX_RETRIES:
+            context.log.warning(
+                "FactLecturas window load failed on attempt %s of %s. Retrying operation.",
+                retry_number + 1,
+                FACTLECTURAS_MAX_RETRIES + 1,
+            )
+            raise RetryRequested(
+                max_retries=FACTLECTURAS_MAX_RETRIES,
+                seconds_to_wait=FACTLECTURAS_RETRY_DELAY_SECONDS,
+            ) from ex
         succeeded = False
+    finally:
+        if df is not None:
+            df.unpersist()
 
     return {
         "from_utc": from_utc,
@@ -99,6 +135,7 @@ def delete_and_load_window_op(context, window: Dict[str, Any]) -> Dict[str, Any]
     required_resource_keys={"sqlserver"},
     ins={"result": In(Dict[str, Any])},
     out=Out(),
+    retry_policy=FACTLECTURAS_RETRY_POLICY,
 )
 def finalize_run_op(context, result: Dict[str, Any]):
     sql: SqlServerResource = context.resources.sqlserver
@@ -141,6 +178,8 @@ def finalize_run_op(context, result: Dict[str, Any]):
         metadata={
             "row_count": result.get("row_count", 0),
             "elapsed_seconds": elapsed,
+            "to_utc": str(to_utc),
+            "original_last_loaded_at": str(original_last_loaded_at),
         }
     )
 

@@ -1,5 +1,5 @@
-from .dwh_dimSidonProdDimensions_sensor import dwh_dimsidonproddimensions_sensor
+from .dwh_dimTelemetryProdDimensions_sensor import dwh_dimtelemetryproddimensions_sensor
 
 __all__ = [
-    "dwh_dimsidonproddimensions_sensor"
+    "dwh_dimtelemetryproddimensions_sensor"
 ]

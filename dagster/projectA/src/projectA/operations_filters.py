@@ -8,6 +8,6 @@ from pyspark.sql.functions import col
 
 def limit_operations_rows_to_closed_hours(
     devices_df: DataFrame,
-    max_local_hour: datetime,
+    max_utc_hour: datetime,
 ) -> DataFrame:
-    return devices_df.filter(col("LocalTimeSpan") <= max_local_hour)
+    return devices_df.filter(col("TimeSpan") <= max_utc_hour)

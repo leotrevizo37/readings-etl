@@ -1,0 +1,3 @@
+* this project can't have mentions of any client.
+* this project cannot mention any client or solution. It has to rename to a publicly available solution and client example. (At this point I'm referring to 'ProjectA', 'ProjectB' & 'ProjectC' as placeholders for the actual client names. Please replace them with generic terms or publicly available solutions.)
+* cannot mention 'DUMA', 'SMARTAUDITS', etc.
