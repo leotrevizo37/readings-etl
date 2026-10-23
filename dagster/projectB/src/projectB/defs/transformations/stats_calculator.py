@@ -1,15 +1,40 @@
 from typing import Optional
 
-from pyspark.sql import DataFrame
+from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import (
     col,
+    collect_list,
     date_trunc,
     avg,
     lit,
+    max as spark_max,
+    min as spark_min,
+    sort_array,
+    struct,
     sum as spark_sum,
     count,
+    to_json,
     when as spark_when,
     stddev)
+
+
+SENSOR_TYPE_EQUIVALENCES = {
+    "Temperatura": ("Temperatura", "Temperature",),
+    "Humedad": ("Humedad", "Humidity", "Umidade",),
+    "Medicion de corriente": ("Medicion de corriente", "Current Measurement", "Current measurement", "Medição de corrente", "Medição de Corrente", "Medicao de corrente",),
+}
+
+
+def sensor_type_filter(*sensor_types: str, column: Optional[Column] = None) -> Column:
+    equivalents = tuple(
+        value
+        for sensor_type in sensor_types
+        for value in SENSOR_TYPE_EQUIVALENCES.get(sensor_type, (sensor_type,))
+    )
+    if column is None:
+        column = col("sensor_type")
+    return column.isin(*equivalents)
+
 
 def stats_calculator(
         base: DataFrame,
@@ -20,12 +45,14 @@ def stats_calculator(
 
     base = (
         base
-        .filter((col("sensor_type") == sensor_type))
-        .withColumn("HourStart", date_trunc("hour", col("LocalTimeSpan")))
+        .filter(sensor_type_filter(sensor_type))
+        .withColumn("HourStart", date_trunc("hour", col("TimeSpan")))
     )
 
     agg_exprs = [
         avg("Value").alias("Val_dummy"),
+        spark_min("Value").alias("Min"),
+        spark_max("Value").alias("Max"),
         count("*").alias("total_readings"),
         stddev("Value").alias("Val_std"),
     ]
@@ -40,10 +67,34 @@ def stats_calculator(
         else:
             anomaly_cond = max_cond
 
-    if anomaly_cond is not None:
-        agg_exprs.append(
-            spark_sum(spark_when(anomaly_cond, 1).otherwise(0)).alias("out_of_range_count")
-        )
+    if anomaly_cond is None:
+        anomaly_cond = lit(False)
+
+    reading_data = struct(
+        col("TimeSpan").alias("timestamp"),
+        col("Value").alias("value"),
+    )
+    agg_exprs.extend(
+        [
+            spark_sum(spark_when(anomaly_cond, 1).otherwise(0))
+            .cast("integer")
+            .alias("Anomalies"),
+            to_json(
+                sort_array(
+                    collect_list(
+                        spark_when(~anomaly_cond, reading_data)
+                    )
+                )
+            ).alias("CorrectReadingsJson"),
+            to_json(
+                sort_array(
+                    collect_list(
+                        spark_when(anomaly_cond, reading_data)
+                    )
+                )
+            ).alias("AnomalousReadingsJson"),
+        ]
+    )
 
     stats_df = (
         base
@@ -60,23 +111,19 @@ def stats_calculator(
         .withColumnRenamed("total_readings", "ReadingsCount")
     )
 
-    if anomaly_cond is not None:
-        stats_df = stats_df.withColumn(
-            "Anomalies",
-            spark_when(col("out_of_range_count") > 0, lit(1)).otherwise(lit(0))
-        ).drop("out_of_range_count")
-    else:
-        stats_df = stats_df.withColumn("Anomalies", lit(0).cast("integer"))
+    stats_df = stats_df.withColumn(
+        "HasAnomalies",
+        col("Anomalies") > lit(0),
+    )
 
     stats_current_df = (
         stats_df
         .withColumnRenamed("Val_dummy", "MeasurementValue")
-        .withColumnRenamed("LocalTimeSpan", "_LocalTimeSpan")
-        .withColumnRenamed("HourStart", "LocalTimeSpan")
+        .withColumnRenamed("HourStart", "TimeSpan")
         .withColumnRenamed("Val_std", "MeasurementStdDev")
     )
 
-    if stats_current_df.rdd.isEmpty():
+    if len(stats_current_df.head(1)) == 0:
         return None
 
     return stats_current_df

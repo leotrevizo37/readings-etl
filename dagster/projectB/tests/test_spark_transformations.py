@@ -1,14 +1,13 @@
+import ast
 import sys
 import unittest
 import warnings
 from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import (
     DoubleType,
-    IntegerType,
     StringType,
     StructField,
     StructType,
@@ -20,24 +19,36 @@ PROJECT_SRC = Path(__file__).resolve().parents[1] / "src"
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from projectB.defs.transformations.lecturas_time_hours import (  # noqa: E402
-    lecturas_time_hours,
-)
-from projectB.defs.transformations.sensor_expected_values import (  # noqa: E402
-    build_sensor_expected_values_from_dataframes,
-)
-from projectB.defs.transformations.stats_calculator import (  # noqa: E402
-    stats_calculator,
-)
-from projectB.defs.transformations.termostatos import termostatos  # noqa: E402
-from projectB.operations_filters import (  # noqa: E402
-    limit_operations_rows_to_closed_hours,
-)
+from projectB.defs.transformations.cuarto_congelacion import cuarto_congelacion  # noqa: E402
+from projectB.defs.transformations.cuarto_residuos import cuarto_residuos  # noqa: E402
+from projectB.defs.transformations.cuartos_frios import cuartos_frios  # noqa: E402
+
 
 warnings.simplefilter("ignore", ResourceWarning)
 
 
 class SparkTransformationsTests(unittest.TestCase):
+    DEVICE_TRANSFORMATION_CASES = [
+        (
+            "cuartos_frios",
+            cuartos_frios,
+            "Cuarto Frio",
+            "Cuarto frio 3",
+        ),
+        (
+            "cuarto_congelacion",
+            cuarto_congelacion,
+            "Cuarto Congelacion",
+            "Cuarto de Congelaci\u00f3n",
+        ),
+        (
+            "cuarto_residuos",
+            cuarto_residuos,
+            "Cuarto Residuos",
+            "Cuarto de Residuos",
+        ),
+    ]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.spark = (
@@ -59,1099 +70,267 @@ class SparkTransformationsTests(unittest.TestCase):
     def _readings_df(self, rows: list[dict]) -> DataFrame:
         return self.spark.createDataFrame(rows)
 
-    def test_lecturas_time_hours_builds_an_inclusive_hourly_scaffold(self) -> None:
-        base = self.spark.createDataFrame(
+    def _projectB_room_inputs(
+        self,
+        method_name: str,
+        device_type: str,
+        device_name: str,
+    ) -> tuple[DataFrame, DataFrame, set[str]]:
+        reading_rows = []
+        dimension_rows = []
+        device_id = method_name + "-device"
+        location_id = method_name + "-location"
+        sensors = [
+            ("temperature", "Temperatura", "Air Temperature", [5.0, 6.0]),
+            ("humidity", "Humedad", "Relative Humidity", [50.0, 51.0]),
+            ("fase-1", "Medicion de corriente", "Current 1", [4.0, 5.0]),
+            ("fase-2", "Medicion de corriente", "Current 2", [6.0, 7.0]),
+            ("fase-3", "Medicion de corriente", "Current 3", [8.0, 9.0]),
+            ("door", "Estado de Puerta", "Door Status", [1.0, 0.0]),
+        ]
+
+        for sensor_idx, (suffix, sensor_type, sensor_name, values) in enumerate(
+            sensors,
+            start=1,
+        ):
+            sensor_id = method_name + "-" + suffix
+            sensor_ty_id = method_name + "-sensor-ty-" + str(sensor_idx)
+            dimension_rows.append(
+                {
+                    "DeviceId": device_id,
+                    "SensorId": sensor_id,
+                    "LocationId": location_id,
+                    "SensorTyId": sensor_ty_id,
+                    "sensor_type": sensor_type,
+                    "sensor_name": sensor_name,
+                    "device_type": device_type,
+                    "device_name": device_name,
+                    "TimeZone": "America/Chihuahua",
+                }
+            )
+            for read_idx, value in enumerate(values):
+                reading_rows.append(
+                    {
+                        "ReadId": method_name + "-read-" + str(sensor_idx) + "-" + str(read_idx),
+                        "DeviceId": device_id,
+                        "SensorId": sensor_id,
+                        "LocationId": location_id,
+                        "SensorTyId": sensor_ty_id,
+                        "sensor_type": sensor_type,
+                        "sensor_name": sensor_name,
+                        "device_type": device_type,
+                        "device_name": device_name,
+                        "TimeSpan": datetime(2026, 3, 29, 10, 5 + read_idx * 20),
+                        "Value": float(value),
+                    }
+                )
+
+        dimension_rows.append(
+            {
+                "DeviceId": device_id,
+                "SensorId": method_name + "-unsupported",
+                "LocationId": location_id,
+                "SensorTyId": method_name + "-unsupported-ty",
+                "sensor_type": "Nivel",
+                "sensor_name": "Nivel",
+                "device_type": device_type,
+                "device_name": device_name,
+                "TimeZone": "America/Chihuahua",
+            }
+        )
+        reading_rows.append(
+            {
+                "ReadId": method_name + "-unsupported-read",
+                "DeviceId": device_id,
+                "SensorId": method_name + "-unsupported",
+                "LocationId": location_id,
+                "SensorTyId": method_name + "-unsupported-ty",
+                "sensor_type": "Nivel",
+                "sensor_name": "Nivel",
+                "device_type": device_type,
+                "device_name": device_name,
+                "TimeSpan": datetime(2026, 3, 29, 10, 15),
+                "Value": 999.0,
+            }
+        )
+
+        return (
+            self._readings_df(reading_rows),
+            self._readings_df(dimension_rows),
+            {method_name + "-" + sensor[0] for sensor in sensors if sensor[1] != "Estado de Puerta"},
+        )
+
+    def test_projectB_room_transformations_materialize_configured_sensors(self) -> None:
+        for method_name, transform_fn, device_type, device_name in self.DEVICE_TRANSFORMATION_CASES:
+            with self.subTest(method=method_name):
+                readings_df, dimensions_df, expected_sensor_ids = self._projectB_room_inputs(
+                    method_name,
+                    device_type,
+                    device_name,
+                )
+
+                result = transform_fn(
+                    readings_df,
+                    dimensions_df,
+                    "2026-03-29 10:00:00",
+                    "2026-03-29 10:00:00",
+                )
+
+                self.assertIsNotNone(result)
+                rows = result.orderBy("SensorId").collect()
+
+                self.assertEqual(len(rows), 5)
+                self.assertEqual({row["SensorId"] for row in rows}, expected_sensor_ids)
+                self.assertEqual({row["device_type"] for row in rows}, {device_type})
+                self.assertEqual(
+                    {row["TimeSpan"] for row in rows},
+                    {datetime(2026, 3, 29, 10, 0)},
+                )
+                self.assertEqual(
+                    {row["LocalTimeSpan"] for row in rows},
+                    {datetime(2026, 3, 29, 4, 0)},
+                )
+                self.assertEqual(len({row["OperationId"] for row in rows}), 5)
+                self.assertEqual(
+                    sorted(row["sensor_type"] for row in rows),
+                    [
+                        "Humedad",
+                        "Medicion de corriente",
+                        "Medicion de corriente",
+                        "Medicion de corriente",
+                        "Temperatura",
+                    ],
+                )
+                self.assertTrue(all(row["ReadingsCount"] == 2 for row in rows))
+
+    def test_cuartos_frios_scaffolds_configured_sensors_without_readings(self) -> None:
+        readings_schema = StructType(
             [
-                {"SensorId": 10, "DeviceId": 1, "SensorTyId": 100, "sensor_type": 1, "device_type": 1, "LocationId": 11},
-                {"SensorId": 10, "DeviceId": 1, "SensorTyId": 100, "sensor_type": 1, "device_type": 1, "LocationId": 11},
-                {"SensorId": 11, "DeviceId": 1, "SensorTyId": 101, "sensor_type": 2, "device_type": 1, "LocationId": 11},
+                StructField("ReadId", StringType(), True),
+                StructField("DeviceId", StringType(), True),
+                StructField("SensorId", StringType(), True),
+                StructField("LocationId", StringType(), True),
+                StructField("SensorTyId", StringType(), True),
+                StructField("sensor_type", StringType(), True),
+                StructField("sensor_name", StringType(), True),
+                StructField("device_type", StringType(), True),
+                StructField("device_name", StringType(), True),
+                StructField("TimeSpan", TimestampType(), True),
+                StructField("Value", DoubleType(), True),
             ]
         )
-
-        result = lecturas_time_hours(
-            base,
-            "2026-03-29 10:00:00",
-            "2026-03-29 12:00:00",
+        factlecturas_extended_df = self.spark.createDataFrame([], readings_schema)
+        _readings_df, dimensions_df, expected_sensor_ids = self._projectB_room_inputs(
+            "cuartos_frios",
+            "Cuarto Frio",
+            "Cuarto Frio 2",
         )
 
-        rows = result.orderBy("SensorId", "LocalTimeSpan").collect()
+        result = cuartos_frios(
+            factlecturas_extended_df,
+            dimensions_df,
+            "2026-03-29 10:00:00",
+            "2026-03-29 10:00:00",
+        )
 
         self.assertIsNotNone(result)
-        self.assertEqual(len(rows), 6)
-        self.assertEqual(
-            [row["LocalTimeSpan"] for row in rows[:3]],
-            [
-                datetime(2026, 3, 29, 10, 0),
-                datetime(2026, 3, 29, 11, 0),
-                datetime(2026, 3, 29, 12, 0),
-            ],
+        rows = result.orderBy("SensorId").collect()
+
+        self.assertEqual(len(rows), 5)
+        self.assertEqual({row["SensorId"] for row in rows}, expected_sensor_ids)
+        self.assertEqual({row["ReadingsCount"] for row in rows}, {0})
+        self.assertEqual({row["Anomalies"] for row in rows}, {0})
+        self.assertEqual({row["HasAnomalies"] for row in rows}, {False})
+        self.assertTrue(all(row["MeasurementValue"] is None for row in rows))
+
+    def test_operations_device_transformations_are_wired_and_covered(self) -> None:
+        operations_path = (
+            PROJECT_SRC
+            / "projectB"
+            / "defs"
+            / "assets"
+            / "operations_assets.py"
+        )
+        transformation_ops_path = (
+            PROJECT_SRC
+            / "projectB"
+            / "defs"
+            / "resources"
+            / "transformation_ops.py"
         )
 
-    def test_lecturas_time_hours_returns_none_for_empty_base(self) -> None:
-        empty_schema = StructType(
-            [
-                StructField("SensorId", IntegerType(), True),
-                StructField("DeviceId", IntegerType(), True),
-                StructField("SensorTyId", IntegerType(), True),
-                StructField("device_type", IntegerType(), True),
-                StructField("sensor_type", IntegerType(), True),
-                StructField("LocationId", IntegerType(), True),
-            ]
-        )
-        base = self.spark.createDataFrame([], schema=empty_schema)
+        operations_tree = ast.parse(operations_path.read_text())
+        methods = None
+        for node in ast.walk(operations_tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "build_devices_df_op":
+                for child in ast.walk(node):
+                    if not isinstance(child, ast.Assign):
+                        continue
+                    if not any(
+                        isinstance(target, ast.Name) and target.id == "methods"
+                        for target in child.targets
+                    ):
+                        continue
+                    methods = [
+                        item.value
+                        for item in child.value.elts
+                        if isinstance(item, ast.Constant)
+                    ]
+                    break
 
-        result = lecturas_time_hours(
-            base,
-            "2026-03-29 10:00:00",
-            "2026-03-29 12:00:00",
-        )
+        self.assertEqual(methods, ["cuartos_frios", "cuarto_congelacion", "cuarto_residuos"])
 
-        self.assertIsNone(result)
-
-    def test_stats_calculator_aggregates_hourly_readings_and_anomalies(self) -> None:
-        base = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Presion",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 3),
-                    "Value": 21.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Presion",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 18),
-                    "Value": 24.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Presion",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 43),
-                    "Value": 10.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Corriente",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 55),
-                    "Value": 999.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-            ]
-        )
-
-        result = stats_calculator(
-            base,
-            sensor_type="Presion",
-            min_expected_value=20,
-        )
-
-        row = result.collect()[0]
-
-        self.assertEqual(row["LocalTimeSpan"], datetime(2026, 3, 29, 10, 0))
-        self.assertEqual(row["ReadingsCount"], 3)
-        self.assertEqual(row["Anomalies"], 1)
-        self.assertAlmostEqual(row["MeasurementValue"], 55 / 3)
-
-    def test_stats_calculator_uses_upper_bound_for_status_and_anomalies(self) -> None:
-        base = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Presion",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 0),
-                    "Value": 25.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Presion",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 25),
-                    "Value": 110.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-            ]
-        )
-
-        result = stats_calculator(
-            base,
-            sensor_type="Presion",
-            min_expected_value=20,
-            max_expected_value=100,
-        )
-
-        row = result.collect()[0]
-
-        self.assertEqual(row["ReadingsCount"], 2)
-        self.assertEqual(row["Anomalies"], 1)
-        self.assertAlmostEqual(row["MeasurementValue"], 67.5)
-
-    def test_stats_calculator_returns_none_when_sensor_type_is_absent(self) -> None:
-        base = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Temperatura",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 0),
-                    "Value": 5.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
+        transformation_ops_tree = ast.parse(transformation_ops_path.read_text())
+        wrapper_methods = set()
+        for node in ast.walk(transformation_ops_tree):
+            if isinstance(node, ast.ClassDef) and node.name == "TransformationOps":
+                wrapper_methods = {
+                    child.name
+                    for child in node.body
+                    if isinstance(child, ast.FunctionDef)
                 }
-            ]
-        )
+                break
 
-        result = stats_calculator(base, sensor_type="Presion", min_expected_value=20)
+        self.assertTrue(set(methods).issubset(wrapper_methods))
 
-        self.assertIsNone(result)
+    def test_device_transformations_use_rlike_patterns(self) -> None:
+        for module_name in ("cuartos_frios", "cuarto_congelacion", "cuarto_residuos"):
+            with self.subTest(module=module_name):
+                source = (
+                    PROJECT_SRC
+                    / "projectB"
+                    / "defs"
+                    / "transformations"
+                    / (module_name + ".py")
+                ).read_text(encoding="utf-8")
 
-    def test_stats_calculator_anomalies_counts_bad_windows_within_the_hour(self) -> None:
-        base = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Corriente",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 0),
-                    "Value": 0.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Corriente",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 20),
-                    "Value": 0.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Corriente",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 40),
-                    "Value": 1.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-            ]
-        )
+                self.assertIn(".rlike(", source)
+                self.assertNotIn(".isin(\"Cuarto Frio 2\"", source)
 
-        result = stats_calculator(
-            base,
-            sensor_type="Corriente",
-            min_expected_value=0.5,
-        )
+    def test_factreadingsmeasurement_processes_utc_timespan(self) -> None:
+        operations_path = PROJECT_SRC / "projectB" / "defs" / "assets" / "operations_assets.py"
+        datalake_path = PROJECT_SRC / "projectB" / "defs" / "transformations" / "datalake_readings_extended.py"
+        operations_source = operations_path.read_text(encoding="utf-8")
+        datalake_source = datalake_path.read_text(encoding="utf-8")
 
-        row = result.collect()[0]
+        self.assertIn("read_lecturas_range(", datalake_source)
+        self.assertIn("read_lecturas_local_range", datalake_source)
+        self.assertIn("use_utc_range=True", operations_source)
+        self.assertIn('col("sensor_name").alias("SensorName")', operations_source)
+        self.assertIn('spark_max("TimeSpan")', operations_source)
+        self.assertIn('get_max_time_span(devices_df, "TimeSpan")', operations_source)
+        self.assertNotIn('spark_max("LocalTimeSpan")', operations_source)
 
-        self.assertEqual(row["LocalTimeSpan"], datetime(2026, 3, 29, 10, 0))
-        self.assertEqual(row["ReadingsCount"], 3)
-        self.assertEqual(row["Anomalies"], 1)
-        self.assertAlmostEqual(row["MeasurementValue"], 1 / 3)
+    def test_factreadingsmeasurement_uses_stage_merge_without_window_cleanup(self) -> None:
+        operations_path = PROJECT_SRC / "projectB" / "defs" / "assets" / "operations_assets.py"
+        source = operations_path.read_text(encoding="utf-8")
+        write_section = source.split("def write_factreadingsmeasurement_op", 1)[1].split("@op(", 1)[0]
+        graph_section = source.split("def operations_assets", 1)[1]
 
-    def test_stats_calculator_anomalies_treats_missing_windows_as_anomalies(self) -> None:
-        base = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Corriente",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 0),
-                    "Value": 1.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "Corriente",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 40),
-                    "Value": 1.0,
-                    "device_type": "A/C Rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-            ]
-        )
-
-        result = stats_calculator(
-            base,
-            sensor_type="Corriente",
-            min_expected_value=0.5,
-        )
-
-        row = result.collect()[0]
-
-        self.assertEqual(row["ReadingsCount"], 2)
-        self.assertEqual(row["Anomalies"], 0)
-        self.assertAlmostEqual(row["MeasurementValue"], 1.0)
-
-    def test_termostatos_accepts_mixed_case_hvac_prefixes(self) -> None:
-        factlecturas_extended_df = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "a/C rooftop",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 5),
-                    "Value": 1.0,
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "a/C rooftop",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 25),
-                    "Value": 1.0,
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 11,
-                    "LocationId": 100,
-                    "SensorTyId": 201,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "a/C rooftop",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 10),
-                    "Value": 24.0,
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 11,
-                    "LocationId": 100,
-                    "SensorTyId": 201,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "a/C rooftop",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 40),
-                    "Value": 22.0,
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 2,
-                    "SensorId": 20,
-                    "LocationId": 101,
-                    "SensorTyId": 300,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "AMBIENTE lounge",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 5),
-                    "Value": 1.0,
-                    "device_name": "A/C Rooftop 2",
-                },
-                {
-                    "DeviceId": 2,
-                    "SensorId": 20,
-                    "LocationId": 101,
-                    "SensorTyId": 300,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "AMBIENTE lounge",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 25),
-                    "Value": 1.0,
-                    "device_name": "A/C Rooftop 2",
-                },
-                {
-                    "DeviceId": 2,
-                    "SensorId": 21,
-                    "LocationId": 101,
-                    "SensorTyId": 301,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "AMBIENTE lounge",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 10),
-                    "Value": 21.0,
-                    "device_name": "A/C Rooftop 2",
-                },
-                {
-                    "DeviceId": 2,
-                    "SensorId": 21,
-                    "LocationId": 101,
-                    "SensorTyId": 301,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "AMBIENTE lounge",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 40),
-                    "Value": 23.0,
-                    "device_name": "A/C Rooftop 2",
-                },
-            ]
-        )
-        dimensions_df = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "a/C rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 11,
-                    "LocationId": 100,
-                    "SensorTyId": 201,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "a/C rooftop",
-                    "device_name": "A/C Rooftop 1",
-                },
-                {
-                    "DeviceId": 2,
-                    "SensorId": 20,
-                    "LocationId": 101,
-                    "SensorTyId": 300,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "AMBIENTE lounge",
-                    "device_name": "A/C Rooftop 2",
-                },
-                {
-                    "DeviceId": 2,
-                    "SensorId": 21,
-                    "LocationId": 101,
-                    "SensorTyId": 301,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "AMBIENTE lounge",
-                    "device_name": "A/C Rooftop 2",
-                },
-            ]
-        )
-
-        result = termostatos(
-            factlecturas_extended_df,
-            dimensions_df,
-            "2026-03-29 10:00:00",
-            "2026-03-29 10:00:00",
-        )
-
-        rows = result.orderBy("DeviceId", "SensorId").collect()
-
-        self.assertEqual(len(rows), 4)
-        self.assertEqual({row["DeviceId"] for row in rows}, {1, 2})
-        self.assertEqual({row["SensorId"] for row in rows}, {10, 11, 20, 21})
-        self.assertEqual(
-            {row["LocalTimeSpan"] for row in rows},
-            {datetime(2026, 3, 29, 10, 0)},
-        )
-        self.assertEqual(len({row["OperationId"] for row in rows}), 4)
-
-    def test_termostatos_scaffolds_missing_sensor_type_stats(self) -> None:
-        factlecturas_extended_df = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 11,
-                    "LocationId": 100,
-                    "SensorTyId": 201,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "a/C rooftop",
-                    "LocalTimeSpan": datetime(2026, 3, 29, 10, 10),
-                    "Value": 23.0,
-                    "device_name": "a/C rooftop 1",
-                },
-            ]
-        )
-        dimensions_df = self._readings_df(
-            [
-                {
-                    "DeviceId": 1,
-                    "SensorId": 10,
-                    "LocationId": 100,
-                    "SensorTyId": 200,
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "a/C rooftop",
-                    "device_name": "a/C rooftop 1",
-                },
-                {
-                    "DeviceId": 1,
-                    "SensorId": 11,
-                    "LocationId": 100,
-                    "SensorTyId": 201,
-                    "sensor_type": "Temperatura C",
-                    "device_type": "a/C rooftop",
-                    "device_name": "a/C rooftop 1",
-                },
-            ]
-        )
-
-        result = termostatos(
-            factlecturas_extended_df,
-            dimensions_df,
-            "2026-03-29 10:00:00",
-            "2026-03-29 10:00:00",
-        )
-
-        result_rows = result.orderBy("SensorId").collect()
-        rows = {row["SensorId"]: row for row in result_rows}
-
-        self.assertEqual(len(result_rows), 2)
-        self.assertEqual(set(rows), {10, 11})
-        self.assertEqual(rows[10]["ReadingsCount"], 0)
-        self.assertIsNone(rows[10]["MeasurementValue"])
-        self.assertEqual(rows[11]["ReadingsCount"], 1)
-        self.assertAlmostEqual(rows[11]["MeasurementValue"], 23.0)
-        self.assertEqual(len({row["OperationId"] for row in rows.values()}),2)
-
-    def test_build_sensor_expected_values_generates_hvac_and_light_rows(self) -> None:
-        dimensions_df = self.spark.createDataFrame(
-            [
-                {
-                    "SensorId": "sensor-temp",
-                    "DeviceId": "device-hvac",
-                    "sensor_type": "Temperatura C",
-                    "device_type": "a/C de Cocina principal",
-                    "Active": True,
-                },
-                {
-                    "SensorId": "sensor-switch",
-                    "DeviceId": "device-hvac",
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "a/C de Cocina principal",
-                    "Active": True,
-                },
-                {
-                    "SensorId": "sensor-light",
-                    "DeviceId": "device-light",
-                    "sensor_type": "Encendido",
-                    "device_type": "Luminaria",
-                    "Active": True,
-                },
-                {
-                    "SensorId": "sensor-ignored",
-                    "DeviceId": "device-other",
-                    "sensor_type": "Temperatura",
-                    "device_type": "Congelador",
-                    "Active": True,
-                },
-            ]
-        )
-        program_profiles_df = self.spark.createDataFrame(
-            [
-                {
-                    "ProgramProfileId": "profile-on",
-                    "ProgramProfileTyId": "pty-on",
-                    "DeviceId": "device-hvac",
-                    "Mode": "00",
-                    "Temperature": 23.0,
-                    "TemperatureGrace": 1.5,
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "profile-off",
-                    "ProgramProfileTyId": "pty-off",
-                    "DeviceId": "device-hvac",
-                    "Mode": "00",
-                    "Temperature": 23.0,
-                    "TemperatureGrace": 1.0,
-                    "Active": True,
-                },
-            ]
-        )
-        program_profile_tys_df = self.spark.createDataFrame(
-            [
-                {
-                    "ProgramProfileTyId": "pty-on",
-                    "Name": "Wake",
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileTyId": "pty-off",
-                    "Name": "off",
-                    "Active": True,
-                },
-            ]
-        )
-        program_schedules_df = self.spark.createDataFrame(
-            [
-                {
-                    "ProgramProfileId": "profile-on",
-                    "ScheduleCode": "A",
-                    "Days": "Mon",
-                    "Time": "08:00",
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "profile-off",
-                    "ScheduleCode": "B",
-                    "Days": "Mon",
-                    "Time": "22:00",
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "profile-on",
-                    "ScheduleCode": "C",
-                    "Days": "Mon",
-                    "Time": "12:00",
-                    "Active": False,
-                },
-            ]
-        )
-        group_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "Active": True},
-            ]
-        )
-        group_has_schedules_df = self.spark.createDataFrame(
-            [
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 6 * * MON",
-                    "Value": True,
-                    "Active": True,
-                },
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 18 * * MON",
-                    "Value": False,
-                    "Active": True,
-                },
-            ]
-        )
-        group_has_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "SensorsSensorId": "sensor-light"},
-            ]
-        )
-
-        result = build_sensor_expected_values_from_dataframes(
-            dimensions_df=dimensions_df,
-            program_profile_tys_df=program_profile_tys_df,
-            program_profiles_df=program_profiles_df,
-            program_schedules_df=program_schedules_df,
-            group_sensors_df=group_sensors_df,
-            group_has_schedules_df=group_has_schedules_df,
-            group_has_sensors_df=group_has_sensors_df,
-        )
-
-        rows = {
-            (
-                row["SensorId"],
-                row["StartTime"],
-                row["EndTime"],
-                row["scheduledDays"],
-            ): row
-            for row in result.collect()
-        }
-
-        self.assertEqual(result.count(), 9)
-        self.assertEqual(
-            rows[("sensor-temp", "08:00:00", "22:00:00", "1")]["min_expected_value"],
-            Decimal("21.500"),
-        )
-        self.assertEqual(
-            rows[("sensor-temp", "08:00:00", "22:00:00", "1")]["max_expected_value"],
-            Decimal("24.500"),
-        )
-        self.assertIsNone(
-            rows[("sensor-temp", "22:00:00", "23:59:00", "1")]["min_expected_value"]
-        )
-        self.assertIsNone(
-            rows[("sensor-temp", "22:00:00", "23:59:00", "1")]["max_expected_value"]
-        )
-        self.assertIn(
-            ("sensor-temp", "00:00:00", "07:59:00", "1"),
-            rows,
-        )
-        self.assertNotIn(
-            ("sensor-temp", "12:00:00", "22:00:00", "1"),
-            rows,
-        )
-        self.assertEqual(
-            rows[("sensor-switch", "22:00:00", "23:59:00", "1")]["min_expected_value"],
-            Decimal("0.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-switch", "08:00:00", "22:00:00", "1")]["min_expected_value"],
-            Decimal("1.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-light", "00:00:00", "05:59:00", "1")]["max_expected_value"],
-            Decimal("0.000"),
-        )
-        self.assertNotIn(
-            ("sensor-ignored", "08:00:00", "22:00:00", "1"),
-            rows,
-        )
-
-    def test_build_sensor_expected_values_merges_overlapping_hvac_day_sets(self) -> None:
-        dimensions_df = self.spark.createDataFrame(
-            [
-                {
-                    "SensorId": "sensor-temp",
-                    "DeviceId": "device-hvac",
-                    "sensor_type": "Temperatura C",
-                    "device_type": "A/C principal",
-                    "Active": True,
-                },
-                {
-                    "SensorId": "sensor-switch",
-                    "DeviceId": "device-hvac",
-                    "sensor_type": "On/Off Termostato",
-                    "device_type": "A/C principal",
-                    "Active": True,
-                },
-            ]
-        )
-        program_profiles_df = self.spark.createDataFrame(
-            [
-                {
-                    "ProgramProfileId": "all-week-on",
-                    "ProgramProfileTyId": "pty-on",
-                    "DeviceId": "device-hvac",
-                    "Mode": "00",
-                    "Temperature": 20.0,
-                    "TemperatureGrace": 1.0,
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "all-week-off",
-                    "ProgramProfileTyId": "pty-off",
-                    "DeviceId": "device-hvac",
-                    "Mode": "00",
-                    "Temperature": 24.0,
-                    "TemperatureGrace": 1.0,
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "weekdays-on",
-                    "ProgramProfileTyId": "pty-on",
-                    "DeviceId": "device-hvac",
-                    "Mode": "00",
-                    "Temperature": 22.0,
-                    "TemperatureGrace": 1.0,
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "weekdays-off",
-                    "ProgramProfileTyId": "pty-off",
-                    "DeviceId": "device-hvac",
-                    "Mode": "00",
-                    "Temperature": 24.0,
-                    "TemperatureGrace": 1.0,
-                    "Active": True,
-                },
-            ]
-        )
-        program_profile_tys_df = self.spark.createDataFrame(
-            [
-                {"ProgramProfileTyId": "pty-on", "Name": "Wake", "Active": True},
-                {"ProgramProfileTyId": "pty-off", "Name": "off", "Active": True},
-            ]
-        )
-        program_schedules_df = self.spark.createDataFrame(
-            [
-                {
-                    "ProgramProfileId": "all-week-on",
-                    "ScheduleCode": "A",
-                    "Days": "*",
-                    "Time": "05:00",
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "all-week-off",
-                    "ScheduleCode": "B",
-                    "Days": "*",
-                    "Time": "11:00",
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "weekdays-on",
-                    "ScheduleCode": "C",
-                    "Days": "MON,TUE,WED,THU,FRI",
-                    "Time": "07:00",
-                    "Active": True,
-                },
-                {
-                    "ProgramProfileId": "weekdays-off",
-                    "ScheduleCode": "D",
-                    "Days": "MON,TUE,WED,THU,FRI",
-                    "Time": "20:00",
-                    "Active": True,
-                },
-            ]
-        )
-        empty_group_sensors_df = self.spark.createDataFrame(
-            [],
-            "GroupSensorsId string, Active boolean",
-        )
-        empty_group_has_schedules_df = self.spark.createDataFrame(
-            [],
-            "GroupSensorsId string, Crone string, Value boolean, Active boolean",
-        )
-        empty_group_has_sensors_df = self.spark.createDataFrame(
-            [],
-            "GroupSensorsId string, SensorsSensorId string",
-        )
-
-        result = build_sensor_expected_values_from_dataframes(
-            dimensions_df=dimensions_df,
-            program_profile_tys_df=program_profile_tys_df,
-            program_profiles_df=program_profiles_df,
-            program_schedules_df=program_schedules_df,
-            group_sensors_df=empty_group_sensors_df,
-            group_has_schedules_df=empty_group_has_schedules_df,
-            group_has_sensors_df=empty_group_has_sensors_df,
-        )
-
-        rows = {
-            (
-                row["SensorId"],
-                row["StartTime"],
-                row["EndTime"],
-                row["scheduledDays"],
-            ): row
-            for row in result.collect()
-        }
-
-        self.assertIsNone(
-            rows[("sensor-temp", "00:00:00", "04:59:00", "1-7")]["min_expected_value"]
-        )
-        self.assertEqual(
-            rows[("sensor-temp", "05:00:00", "07:00:00", "1,2,3,4,5")]["min_expected_value"],
-            Decimal("19.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-temp", "05:00:00", "07:00:00", "1,2,3,4,5")]["max_expected_value"],
-            Decimal("21.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-temp", "07:00:00", "11:00:00", "1,2,3,4,5")]["min_expected_value"],
-            Decimal("21.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-temp", "07:00:00", "11:00:00", "1,2,3,4,5")]["max_expected_value"],
-            Decimal("23.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-temp", "05:00:00", "11:00:00", "6,7")]["min_expected_value"],
-            Decimal("19.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-switch", "05:00:00", "07:00:00", "1,2,3,4,5")]["min_expected_value"],
-            Decimal("1.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-switch", "11:00:00", "23:59:00", "6,7")]["min_expected_value"],
-            Decimal("0.000"),
-        )
-        self.assertNotIn(
-            ("sensor-temp", "05:00:00", "11:00:00", "1-7"),
-            rows,
-        )
-
-    def test_build_sensor_expected_values_merges_overlapping_light_day_sets(self) -> None:
-        dimensions_df = self.spark.createDataFrame(
-            [
-                {
-                    "SensorId": "sensor-light",
-                    "DeviceId": "device-light",
-                    "sensor_type": "Encendido",
-                    "device_type": "Luminaria",
-                    "Active": True,
-                },
-            ]
-        )
-        empty_profiles_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileId string, ProgramProfileTyId string, DeviceId string, Mode string, Temperature double, TemperatureGrace double, Active boolean",
-        )
-        empty_profile_tys_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileTyId string, Name string, Active boolean",
-        )
-        empty_program_schedules_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileId string, ScheduleCode string, Days string, Time string, Active boolean",
-        )
-        group_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "Active": True},
-            ]
-        )
-        group_has_schedules_df = self.spark.createDataFrame(
-            [
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 6 * * ?",
-                    "Value": True,
-                    "Active": True,
-                },
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 22 * * ?",
-                    "Value": False,
-                    "Active": True,
-                },
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 8 * * MON-FRI",
-                    "Value": False,
-                    "Active": True,
-                },
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 20 * * MON-FRI",
-                    "Value": True,
-                    "Active": True,
-                },
-            ]
-        )
-        group_has_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "SensorsSensorId": "sensor-light"},
-            ]
-        )
-
-        result = build_sensor_expected_values_from_dataframes(
-            dimensions_df=dimensions_df,
-            program_profile_tys_df=empty_profile_tys_df,
-            program_profiles_df=empty_profiles_df,
-            program_schedules_df=empty_program_schedules_df,
-            group_sensors_df=group_sensors_df,
-            group_has_schedules_df=group_has_schedules_df,
-            group_has_sensors_df=group_has_sensors_df,
-        )
-
-        rows = {
-            (
-                row["SensorId"],
-                row["StartTime"],
-                row["EndTime"],
-                row["scheduledDays"],
-            ): row
-            for row in result.collect()
-        }
-
-        self.assertEqual(
-            rows[("sensor-light", "00:00:00", "05:59:00", "1-7")]["max_expected_value"],
-            Decimal("0.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-light", "06:00:00", "08:00:00", "1,2,3,4,5")]["max_expected_value"],
-            Decimal("1.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-light", "08:00:00", "20:00:00", "1,2,3,4,5")]["max_expected_value"],
-            Decimal("0.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-light", "20:00:00", "22:00:00", "1,2,3,4,5")]["max_expected_value"],
-            Decimal("1.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-light", "06:00:00", "22:00:00", "6,7")]["max_expected_value"],
-            Decimal("1.000"),
-        )
-        self.assertEqual(
-            rows[("sensor-light", "22:00:00", "23:59:00", "1-7")]["max_expected_value"],
-            Decimal("0.000"),
-        )
-        self.assertNotIn(
-            ("sensor-light", "06:00:00", "22:00:00", "1-7"),
-            rows,
-        )
-
-    def test_build_sensor_expected_values_maps_sunday_to_seven(self) -> None:
-        dimensions_df = self.spark.createDataFrame(
-            [
-                {
-                    "SensorId": "sensor-light",
-                    "DeviceId": "device-light",
-                    "sensor_type": "Encendido",
-                    "device_type": "Luminaria",
-                    "Active": True,
-                },
-            ]
-        )
-        empty_profiles_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileId string, ProgramProfileTyId string, DeviceId string, Mode string, Temperature double, TemperatureGrace double, Active boolean",
-        )
-        empty_profile_tys_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileTyId string, Name string, Active boolean",
-        )
-        empty_program_schedules_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileId string, ScheduleCode string, Days string, Time string, Active boolean",
-        )
-        group_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "Active": True},
-            ]
-        )
-        group_has_schedules_df = self.spark.createDataFrame(
-            [
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 9 * * SUN",
-                    "Value": True,
-                    "Active": True,
-                },
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 21 * * SUN",
-                    "Value": False,
-                    "Active": True,
-                },
-            ]
-        )
-        group_has_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "SensorsSensorId": "sensor-light"},
-            ]
-        )
-
-        result = build_sensor_expected_values_from_dataframes(
-            dimensions_df=dimensions_df,
-            program_profile_tys_df=empty_profile_tys_df,
-            program_profiles_df=empty_profiles_df,
-            program_schedules_df=empty_program_schedules_df,
-            group_sensors_df=group_sensors_df,
-            group_has_schedules_df=group_has_schedules_df,
-            group_has_sensors_df=group_has_sensors_df,
-        )
-
-        self.assertEqual({row["scheduledDays"] for row in result.collect()}, {"7"})
-
-    def test_build_sensor_expected_values_normalizes_wildcard_days(self) -> None:
-        dimensions_df = self.spark.createDataFrame(
-            [
-                {
-                    "SensorId": "sensor-light",
-                    "DeviceId": "device-light",
-                    "sensor_type": "Encendido",
-                    "device_type": "Luminaria",
-                    "Active": True,
-                },
-            ]
-        )
-        empty_profiles_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileId string, ProgramProfileTyId string, DeviceId string, Mode string, Temperature double, TemperatureGrace double, Active boolean",
-        )
-        empty_profile_tys_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileTyId string, Name string, Active boolean",
-        )
-        empty_program_schedules_df = self.spark.createDataFrame(
-            [],
-            "ProgramProfileId string, ScheduleCode string, Days string, Time string, Active boolean",
-        )
-        group_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "Active": True},
-            ]
-        )
-        group_has_schedules_df = self.spark.createDataFrame(
-            [
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "30 9 * * ?",
-                    "Value": True,
-                    "Active": True,
-                },
-                {
-                    "GroupSensorsId": "group-1",
-                    "Crone": "0 21 * * ?",
-                    "Value": False,
-                    "Active": True,
-                },
-            ]
-        )
-        group_has_sensors_df = self.spark.createDataFrame(
-            [
-                {"GroupSensorsId": "group-1", "SensorsSensorId": "sensor-light"},
-            ]
-        )
-
-        result = build_sensor_expected_values_from_dataframes(
-            dimensions_df=dimensions_df,
-            program_profile_tys_df=empty_profile_tys_df,
-            program_profiles_df=empty_profiles_df,
-            program_schedules_df=empty_program_schedules_df,
-            group_sensors_df=group_sensors_df,
-            group_has_schedules_df=group_has_schedules_df,
-            group_has_sensors_df=group_has_sensors_df,
-        )
-
-        rows = result.orderBy("StartTime").collect()
-
-        self.assertEqual(len(rows), 3)
-        self.assertEqual({row["scheduledDays"] for row in rows}, {"1-7"})
-        self.assertEqual(rows[0]["StartTime"], "00:00:00")
-        self.assertEqual(rows[0]["EndTime"], "09:29:00")
-        self.assertEqual(rows[-1]["StartTime"], "21:00:00")
-
-    def test_limit_operations_rows_to_closed_hours_removes_future_rows(self) -> None:
-        schema = StructType(
-            [
-                StructField("DeviceId", IntegerType(), True),
-                StructField("SensorId", IntegerType(), True),
-                StructField("LocalTimeSpan", TimestampType(), True),
-                StructField("sensor_type", StringType(), True),
-                StructField("MeasurementValue", DoubleType(), True),
-            ]
-        )
-        base = self.spark.createDataFrame(
-            [
-                (1, 10, datetime(2026, 3, 29, 10, 0), "Corriente", 1.0),
-                (1, 10, datetime(2026, 3, 29, 11, 0), "Corriente", 2.0),
-            ],
-            schema=schema,
-        )
-
-        result = limit_operations_rows_to_closed_hours(
-            base,
-            datetime(2026, 3, 29, 10, 0),
-        )
-
-        rows = result.orderBy("LocalTimeSpan").collect()
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["LocalTimeSpan"], datetime(2026, 3, 29, 10, 0))
+        self.assertIn("write_fact_operations_stage(", write_section)
+        self.assertIn("merge_fact_readings_measurement(", write_section)
+        self.assertNotIn("delete_range(", write_section)
+        self.assertNotIn("window_cleanup(fetch_from_ts)", graph_section)
 
 
 if __name__ == "__main__":

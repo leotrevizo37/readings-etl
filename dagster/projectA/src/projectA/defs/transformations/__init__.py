@@ -7,12 +7,9 @@ __all__ = [
     "datalake_readings_extended",
     "factlecturas_extended",
     "raw_dimensions",
-    "sensor_expected_values",
-    "maquinas_nieve",
-    "maquinas_soda",
-    "luces",
-    "termostatos",
-    "cuartos_congelacion",
+    "sensor_events",
+    "temperature_events",
+    "cisterna",
     "cuartos_refrigeracion",
 ]
 
@@ -20,12 +17,9 @@ _MODULE_BY_EXPORT = {
     "datalake_readings_extended": ".datalake_readings_extended",
     "factlecturas_extended": ".factlecturas_extended",
     "raw_dimensions": ".raw_dimensions",
-    "sensor_expected_values": ".sensor_expected_values",
-    "maquinas_nieve": ".maquinas_nieve",
-    "maquinas_soda": ".maquinas_soda",
-    "luces": ".luces",
-    "termostatos": ".termostatos",
-    "cuartos_congelacion": ".cuartos_congelacion",
+    "cisterna": ".cisterna",
+    "sensor_events": ".sensor_events",
+    "temperature_events": ".temperature_events",
     "cuartos_refrigeracion": ".cuartos_refrigeracion",
 }
 

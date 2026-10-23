@@ -1,7 +1,11 @@
-from .dwh_dimSensorExpectedVal_sensor import dwh_dimsensorexpectedval_sensor
-from .dwh_dimSidonProdDimensions_sensor import dwh_dimsidonproddimensions_sensor
+from .asset_row_count_trend_sensor import asset_row_count_trend_sensor
+from .dwh_dimTelemetryProdDimensions_sensor import dwh_dimtelemetryproddimensions_sensor
+from .operational_alerts_sensor import operational_alerts_sensor
+from .telemetry_configuration_sensor import telemetry_configuration_sensor
 
 __all__ = [
-    "dwh_dimsensorexpectedval_sensor",
-    "dwh_dimsidonproddimensions_sensor"
+    "telemetry_configuration_sensor",
+    "asset_row_count_trend_sensor",
+    "dwh_dimtelemetryproddimensions_sensor",
+    "operational_alerts_sensor",
 ]

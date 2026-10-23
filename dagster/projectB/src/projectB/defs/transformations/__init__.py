@@ -7,9 +7,11 @@ __all__ = [
     "datalake_readings_extended",
     "factlecturas_extended",
     "raw_dimensions",
-    "sensor_expected_values",
-    "luces",
-    "termostatos",
+    "cuarto_congelacion",
+    "cuarto_residuos",
+    "cuartos_frios",
+    "sensor_events",
+    "temperature_events",
 ]
 
 _MODULE_BY_EXPORT = {
@@ -17,8 +19,11 @@ _MODULE_BY_EXPORT = {
     "factlecturas_extended": ".factlecturas_extended",
     "raw_dimensions": ".raw_dimensions",
     "sensor_expected_values": ".sensor_expected_values",
-    "luces": ".luces",
-    "termostatos": ".termostatos",
+    "cuarto_congelacion": ".cuarto_congelacion",
+    "cuarto_residuos": ".cuarto_residuos",
+    "cuartos_frios": ".cuartos_frios",
+    "sensor_events": ".sensor_events",
+    "temperature_events": ".temperature_events",
 }
 
 

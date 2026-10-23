@@ -18,7 +18,7 @@ def _build_defs() -> Any:
         dbo_device_tys,
         dbo_sublocations,
         dbo_sublocation_tys,
-        dwh_dimsidonproddimensions,
+        dwh_dimtelemetryproddimensions,
         dwh_factlecturas,
         operations_assets,
     )
@@ -46,7 +46,7 @@ def _build_defs() -> Any:
         operations_sched_every_w,
     )
     from .sensors import (
-        dwh_dimsidonproddimensions_sensor,
+        dwh_dimtelemetryproddimensions_sensor,
     )
 
     return Definitions(
@@ -74,7 +74,7 @@ def _build_defs() -> Any:
             cleanup_schedule,
         ],
         sensors=[
-            dwh_dimsidonproddimensions_sensor,
+            dwh_dimtelemetryproddimensions_sensor,
         ],
         assets=[
             dbo_sensors,
@@ -85,7 +85,7 @@ def _build_defs() -> Any:
             dbo_sublocation_tys,
             dwh_factlecturas,
             operations_assets,
-            dwh_dimsidonproddimensions,
+            dwh_dimtelemetryproddimensions,
             cleanup_old_runs,
         ],
     )

@@ -1,0 +1,57 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.29.1
+    hooks:
+      - id: gitleaks
+        args:
+          - --config=.gitleaks.toml
+          - --redact
+
+  - repo: https://github.com/sqlfluff/sqlfluff
+    rev: 4.3.0
+    hooks:
+      - id: sqlfluff-lint
+        files: ^sql/.*\.sql$
+        args:
+          - --dialect=tsql
+          - --exclude-rules=CP02,RF04,LT05
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        files: ^sql/.*\.ya?ml$
+        args:
+          - -f
+          - parsable
+          - -d
+          - "{extends: default, rules: {line-length: disable, truthy: disable, document-start: disable}}"
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        files: ^dagster/.*\.py$
+        args:
+          - --select=E4,E7,E9,F
+
+  - repo: local
+    hooks:
+      - id: dg-check-defs
+        name: Validate Dagster definitions
+        entry: >-
+          python -c "import os, pathlib, subprocess, sys;
+          projects = ('projectA', 'projectB', 'projectD');
+          os.environ['PYTHONPATH'] = os.pathsep.join([str(pathlib.Path('dagster', project, 'src').resolve())
+          for project in projects] + [os.environ.get('PYTHONPATH', '')]);
+          sys.exit(subprocess.call([sys.executable, '-m', 'dagster', 'definitions', 'validate'] +
+          [arg for project in projects for arg in ('-m', project + '.definitions')]))"
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: forbid-private-env-files
+        name: Reject private environment files
+        entry: Private environment files must not be committed
+        language: fail
+        files: '(^|/)\.env($|\.)'
+        exclude: '(^|/)\.env\.example$'

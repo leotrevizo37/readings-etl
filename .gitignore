@@ -139,6 +139,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -230,3 +232,7 @@ dagster/dagster_home/history/
 
 # (Opcional) cualquier .log dentro de dagster_home
 dagster/dagster_home/**/*.log
+
+generate-ai-report*.js
+evidencia_*.txt
+tmp/
