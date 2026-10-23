@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lit, max as spark_max
+from pyspark import StorageLevel
 from dagster import (
     AssetIn,
     AssetKey,
@@ -13,6 +14,8 @@ from dagster import (
     Nothing,
     OpExecutionContext,
     Out,
+    RetryPolicy,
+    RetryRequested,
     graph_multi_asset,
     op,
 )
@@ -24,6 +27,12 @@ from ...operations_window import build_operations_window, resolve_operations_wat
 
 
 OPERATIONS_TIMEZONE = ZoneInfo("America/Ciudad_Juarez")
+OPERATIONS_MAX_RETRIES = 3
+OPERATIONS_RETRY_DELAY_SECONDS = 60
+OPERATIONS_RETRY_POLICY = RetryPolicy(
+    max_retries=OPERATIONS_MAX_RETRIES,
+    delay=OPERATIONS_RETRY_DELAY_SECONDS,
+)
 
 def _truncate_to_seconds(dt: datetime) -> datetime:
     return dt.replace(microsecond=0)
@@ -44,14 +53,14 @@ def _current_operational_hour_start() -> datetime:
     )
 
 
-def _get_latest_real_local_hour(devices_df: DataFrame) -> Optional[datetime]:
-    if devices_df.rdd.isEmpty() or "ReadingsCount" not in devices_df.columns:
+def _get_latest_real_time_span(devices_df: DataFrame) -> Optional[datetime]:
+    if "ReadingsCount" not in devices_df.columns or len(devices_df.head(1)) == 0:
         return None
 
     latest_row = (
         devices_df
         .filter(col("ReadingsCount") > 0)
-        .agg(spark_max("LocalTimeSpan").alias("max_ts"))
+        .agg(spark_max("TimeSpan").alias("max_ts"))
         .collect()[0]
     )
     return latest_row.max_ts
@@ -65,6 +74,7 @@ def _get_latest_real_local_hour(devices_df: DataFrame) -> Optional[datetime]:
         "deps": In(Optional[str])
     },
     out=Out(Dict[str, Any]),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def start_operations_run_and_get_range_op(
         context,
@@ -83,22 +93,19 @@ def start_operations_run_and_get_range_op(
     window = build_operations_window(last_loaded_at)
     if window["watermark_in_future"]:
         context.log.warning(
-            "factReadingsMeasurement watermark %s is ahead of current local hour %s. "
-            "This run will clean future rows and clamp processing to the current local window.",
-            window["from_local"],
-            window["max_local_hour"],
+            "factReadingsMeasurement watermark %s is ahead of current UTC hour %s. "
+            "This run will clamp processing to the current UTC window.",
+            window["from_time_span"],
+            window["max_utc_hour"],
         )
 
     sql.mark_run_started("factReadingsMeasurement")
     context.log.info(
-        "factReadingsMeasurement local run window from "
+        "factReadingsMeasurement UTC run window from "
         + str(window["fetch_from"])
         + " to "
-        + str(window["max_local_hour"])
-        + " (cleanup<"
-        + str(window["delete_to_exclusive"])
-        + ")"
-        + " [tz=America/Ciudad_Juarez]"
+        + str(window["max_utc_hour"])
+        + " [tz=UTC]"
         + deps
     )
 
@@ -112,6 +119,7 @@ def start_operations_run_and_get_range_op(
         "window": In(Dict[str, Any])
     },
     out=Out(Optional[str]),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def window_cleanup(
         context: OpExecutionContext,
@@ -137,12 +145,13 @@ def window_cleanup(
 
 @op(
     required_resource_keys={
-        "spark"
+        "spark",
     },
     ins={
         "cleaning": In(Optional[str])
     },
     out=Out(DataFrame, io_manager_key="spark_df_io_manager"),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def load_raw_dimensions_op(
         context: OpExecutionContext,
@@ -159,13 +168,14 @@ def load_raw_dimensions_op(
 
 @op(
     required_resource_keys={
-        "spark"
+        "spark",
     },
     ins={
         "raw_dims_df": In(DataFrame),
         "window": In(Dict[str, Any])
     },
     out=Out(DataFrame, io_manager_key="spark_df_io_manager"),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def load_datalake_readings_extended_op(
         context: OpExecutionContext,
@@ -179,13 +189,10 @@ def load_datalake_readings_extended_op(
         raw_dimensions=raw_dims_df,
         fetch_readings_from=window["fetch_from"],
         fetch_readings_to=window["read_to_utc"],
+        use_utc_range=True,
     )
 
     if readings_extended_df is None:
-        _df: DataFrame = spark_res.create_emptiness_dataframe()
-        context.log.warning("Data Lake readings are empty.")
-        return _df
-    elif readings_extended_df.rdd.isEmpty():
         _df: DataFrame = spark_res.create_emptiness_dataframe()
         context.log.warning("Data Lake readings are empty.")
         return _df
@@ -202,6 +209,7 @@ def load_datalake_readings_extended_op(
         "readings_extended_df": In(Optional[DataFrame])
     },
     out=Out(Optional[DataFrame], io_manager_key="spark_df_io_manager"),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def build_devices_df_op(
         context: OpExecutionContext,
@@ -215,76 +223,90 @@ def build_devices_df_op(
         context.log.warning("Readings_extended_df is empty.")
         return readings_extended_df
 
-    methods = [
-        "luces",
-        "termostatos",
-    ]
+    readings_extended_df = readings_extended_df.persist(StorageLevel.MEMORY_AND_DISK)
 
-    for method in methods:
-        context.log.info("Materializing dataframe for method: " + method)
-        fn = getattr(transformation_ops, method)
-        method_df = fn(
-            readings_extended_df,
-            dims,
-            window["fetch_from"],
-            window["max_local_hour"],
-        )
+    try:
+        methods = [
+            "cuartos_frios",
+            "cuarto_congelacion",
+            "cuarto_residuos",
+        ]
 
-        if method_df is None:
-            context.log.info("Method returned no dataframe: " + method)
-            continue
+        for method in methods:
+            context.log.info("Materializing dataframe for method: " + method)
+            fn = getattr(transformation_ops, method)
+            method_df = fn(
+                readings_extended_df,
+                dims,
+                window["fetch_from"],
+                window["max_utc_hour"],
+            )
 
-        df = method_df.select(
-            col("OperationId"),
-            col("DeviceId"),
-            col("LocationId"),
-            col("SensorTyId"),
-            col("SensorId"),
-            col("MeasurementValue"),
-            col("MeasurementStdDev"),
-            col("Anomalies"),
-            col("LocalTimeSpan"),
-            col("ReadingsCount"),
-            col("sensor_type").alias("SensorType"),
-            col("device_type").alias("DeviceType"),
-        )
+            if method_df is None:
+                context.log.info("Method returned no dataframe: " + method)
+                continue
 
-        if df.rdd.isEmpty():
-            context.log.info("No rows for method: " + method)
-            continue
+            df = method_df.select(
+                col("OperationId"),
+                col("DeviceId"),
+                col("LocationId"),
+                col("SensorTyId"),
+                col("SensorId"),
+                col("sensor_name"),
+                col("MeasurementValue"),
+                col("MeasurementStdDev"),
+                col("Min"),
+                col("Max"),
+                col("Anomalies"),
+                col("HasAnomalies"),
+                col("CorrectReadingsJson"),
+                col("AnomalousReadingsJson"),
+                col("TimeSpan"),
+                col("LocalTimeSpan"),
+                col("ReadingsCount"),
+                col("sensor_type").alias("SensorType"),
+                col("device_type").alias("DeviceType"),
+            )
+
+            if len(df.head(1)) == 0:
+                context.log.info("No rows for method: " + method)
+                continue
+
+            if union_df is None:
+                union_df = df
+            else:
+                union_df = union_df.unionByName(df)
 
         if union_df is None:
-            union_df = df
-        else:
-            union_df = union_df.unionByName(df)
+            context.log.info("No rows across all transformations.")
+            return readings_extended_df.limit(0)
 
-    if union_df is None:
-        context.log.info("No rows across all transformations.")
-        return readings_extended_df.limit(0)
-
-    limited_df = limit_operations_rows_to_closed_hours(
-        union_df,
-        window["max_local_hour"],
-    )
-    latest_real_local_hour = _get_latest_real_local_hour(limited_df)
-
-    if latest_real_local_hour is None:
-        context.log.info(
-            "No real readings found in the current operations window. "
-            "Skipping scaffold-only rows and keeping the watermark in place."
+        limited_df = limit_operations_rows_to_closed_hours(
+            union_df,
+            window["max_utc_hour"],
         )
-        return limited_df.limit(0)
+        latest_real_time_span = _get_latest_real_time_span(limited_df)
 
-    context.log.info(
-        "Latest real operations hour found at %s. "
-        "Rows scaffolded beyond that hour will not be materialized.",
-        latest_real_local_hour,
-    )
-    return limited_df.filter(col("LocalTimeSpan") <= lit(latest_real_local_hour))
+        if latest_real_time_span is None:
+            context.log.info(
+                "No real readings found in the current operations window. "
+                "Skipping scaffold-only rows and keeping the watermark in place."
+            )
+            return limited_df.limit(0)
+
+        context.log.info(
+            "Latest real operations hour found at %s. "
+            "Rows scaffolded beyond that hour will not be materialized.",
+            latest_real_time_span,
+        )
+        return limited_df.filter(col("TimeSpan") <= lit(latest_real_time_span))
+    finally:
+        readings_extended_df.unpersist()
 
 @op(
     required_resource_keys={
-        "spark"
+        "spark",
+        "sqlserver",
     },
     ins={
         "devices_df": In(DataFrame),
@@ -294,6 +316,7 @@ def build_devices_df_op(
         "asset": Out(Nothing),
         "result": Out(Dict[str, Any])
     },
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def write_factreadingsmeasurement_op(
         context,
@@ -302,19 +325,29 @@ def write_factreadingsmeasurement_op(
     start_time = perf_counter()
     spark_res = context.resources.spark
 
-    inserted = 0
+    staged_rows = 0
+    merged_rows = 0
     rows_with_readings_count_gt_0 = 0
     max_time_span: Optional[datetime] = None
     succeeded = False
     error_message: Optional[str] = None
 
+    sqlserver: SqlServerResource = context.resources.sqlserver
+    retry_number = getattr(context, "retry_number", 0)
+    run_id = context.run_id
+
+    def clear_stage() -> int:
+        return sqlserver.clear_fact_readings_measurement_stage(run_id)
+
     def add_asset_metadata() -> None:
         metadata: Dict[str, Any] = {
-            "row_count": inserted,
+            "row_count": merged_rows,
+            "staged_row_count": staged_rows,
+            "merged_rows": merged_rows,
             "rows_with_readings_count_gt_0": rows_with_readings_count_gt_0,
             "elapsed_seconds": round(perf_counter() - start_time, 3),
-            "from_local": str(window["fetch_from"]),
-            "to_local": str(window["max_local_hour"]),
+            "from_utc": str(window["fetch_from"]),
+            "to_utc": str(window["max_utc_hour"]),
             "max_time_span": str(max_time_span) if max_time_span else None,
             "succeeded": succeeded,
         }
@@ -323,13 +356,21 @@ def write_factreadingsmeasurement_op(
         context.add_output_metadata(metadata, output_name="asset")
 
     try:
-        if devices_df.rdd.isEmpty() or len(devices_df.columns) <= 1:
+        if retry_number > 0:
+            cleared_rows = clear_stage()
+            context.log.info(
+                "Cleared "
+                + str(cleared_rows)
+                + " factReadingsMeasurement stage rows before retry."
+            )
+
+        if len(devices_df.columns) <= 1 or len(devices_df.head(1)) == 0:
             succeeded = True
         else:
             rows_with_readings_count_gt_0 = devices_df.filter(
                 col("ReadingsCount") > 0
             ).count()
-            inserted = spark_res.write_fact_operations(
+            staged_rows = spark_res.write_fact_operations_stage(
                 devices_df
                 .select(
                     "OperationId",
@@ -339,30 +380,74 @@ def write_factreadingsmeasurement_op(
                     "LocationId",
                     "DeviceType",
                     "SensorType",
+                    "TimeSpan",
                     "LocalTimeSpan",
                     "MeasurementValue",
                     "MeasurementStdDev",
+                    "Min",
+                    "Max",
+                    col("sensor_name").alias("SensorName"),
                     "ReadingsCount",
-                    "Anomalies"
-                )
+                    "Anomalies",
+                    "HasAnomalies",
+                    "CorrectReadingsJson",
+                    "AnomalousReadingsJson"
+                ),
+                run_id,
             )
-            max_time_span = spark_res.get_max_time_span(devices_df, "LocalTimeSpan")
+            merged_rows = sqlserver.merge_fact_readings_measurement(run_id)
+            max_time_span = spark_res.get_max_time_span(devices_df, "TimeSpan")
             succeeded = True
-            context.log.info(str(inserted) + "rows inserted.")
+            context.log.info(
+                str(staged_rows)
+                + " rows staged and "
+                + str(merged_rows)
+                + " rows merged into dwh.factReadingsMeasurement."
+            )
     except Exception as ex:
         error_message = str(ex)
         succeeded = False
+        try:
+            cleared_rows = clear_stage()
+            context.log.warning(
+                "Cleared %s factReadingsMeasurement stage rows after failed write.",
+                cleared_rows,
+            )
+        except Exception as cleanup_ex:
+            context.log.warning(
+                "Could not clean factReadingsMeasurement staging rows before retry: %s",
+                cleanup_ex,
+            )
+        if retry_number < OPERATIONS_MAX_RETRIES:
+            context.log.warning(
+                "factReadingsMeasurement write failed on attempt %s of %s. "
+                "Retrying operation.",
+                retry_number + 1,
+                OPERATIONS_MAX_RETRIES + 1,
+            )
+            raise RetryRequested(
+                max_retries=OPERATIONS_MAX_RETRIES,
+                seconds_to_wait=OPERATIONS_RETRY_DELAY_SECONDS,
+            ) from ex
+    finally:
+        try:
+            clear_stage()
+        except Exception:
+            pass
 
     add_asset_metadata()
 
     return (
         None,
         {
-            "to_local": window["max_local_hour"],
+            "to_time_span": window["max_utc_hour"],
             "original_last_loaded_at": window["original_last_loaded_at"],
             "max_time_span": max_time_span,
             "succeeded": succeeded,
             "error_message": error_message,
+            "row_count": merged_rows,
+            "staged_rows": staged_rows,
+            "merged_rows": merged_rows,
         },
     )
 
@@ -375,6 +460,7 @@ def write_factreadingsmeasurement_op(
         "hourly_readings": In(Dict[str, Any])
     },
     out=Out(Optional[Dict[str, Any]]),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def finalize_operations_run_op(
         context,
@@ -387,7 +473,7 @@ def finalize_operations_run_op(
     if not succeeded:
         context.log.warning("error readings: " + str(error_message))
 
-    to_local: datetime = hourly_readings["to_local"]
+    to_time_span: datetime = hourly_readings["to_time_span"]
     original_last_loaded_at: datetime = hourly_readings["original_last_loaded_at"]
     max_time_span: Optional[datetime] = hourly_readings["max_time_span"]
 
@@ -395,7 +481,7 @@ def finalize_operations_run_op(
         succeeded=succeeded,
         original_last_loaded_at=original_last_loaded_at,
         max_time_span=max_time_span,
-        max_local_hour=to_local,
+        max_utc_hour=to_time_span,
     )
 
     if not succeeded:
@@ -422,12 +508,22 @@ def finalize_operations_run_op(
         succeeded=succeeded,
         error_message=error_message,
     )
+    metadata: Dict[str, Any] = {
+        "succeeded": succeeded,
+        "to_utc": str(to_time_span),
+        "max_time_span": str(max_time_span) if max_time_span else None,
+        "original_last_loaded_at": str(original_last_loaded_at),
+    }
+    if error_message:
+        metadata["error_message"] = error_message
+    context.add_output_metadata(metadata)
 
 @op(
     ins={
         "deps": In(Optional[Dict[str, Any]])
     },
-    out=Out(Optional[str])
+    out=Out(Optional[str]),
+    retry_policy=OPERATIONS_RETRY_POLICY,
 )
 def upstream_deps_gate(context,
                        deps:Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -453,8 +549,7 @@ def upstream_deps_gate(context,
 def operations_assets(data_transformations):
     deps = upstream_deps_gate(data_transformations)
     fetch_from_ts = start_operations_run_and_get_range_op(deps)
-    cleaning = window_cleanup(fetch_from_ts)
-    raw_dims_df = load_raw_dimensions_op(cleaning)
+    raw_dims_df = load_raw_dimensions_op(deps)
     readings_extended_df = load_datalake_readings_extended_op(
         raw_dims_df=raw_dims_df,
         window=fetch_from_ts

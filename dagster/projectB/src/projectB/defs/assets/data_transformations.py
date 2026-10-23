@@ -2,10 +2,11 @@ from typing import Optional, Dict, Any
 
 from dagster import asset, AssetKey
 
+
 @asset(
     name="data_transformations",
     deps=[
-        AssetKey(["projectB", "dwh_dimsidonproddimensions"]),
+        AssetKey(["projectB", "dwh_dimtelemetryproddimensions"]),
         AssetKey(["projectB", "dwh_factlecturas"]),
     ],
     group_name="projectB",

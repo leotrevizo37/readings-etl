@@ -18,6 +18,20 @@ def raw_dimensions(
         .load()
     )
 
+    dbo_models_df =(
+        spark.read.format("jdbc")
+        .option("dbtable", "dbo.Models")
+        .options(**dim_sqlserver.get_basic_options())
+        .load()
+    )
+
+    dbo_sensor_hubs_df =(
+        spark.read.format("jdbc")
+        .option("dbtable", "dbo.SensorHubs")
+        .options(**dim_sqlserver.get_basic_options())
+        .load()
+    )
+
     dbo_sensor_tys_df =(
         spark.read.format("jdbc")
         .option("dbtable", "dbo.SensorTys")
@@ -70,13 +84,23 @@ def raw_dimensions(
     sensors_devices_locations_df = (
         dbo_sensors_df.alias("s")
         .join(dbo_sensor_tys_df.alias("sty"), on="SensorTyId", how="left")
+        .join(dbo_models_df.alias("m"), col("s.ModelId") == col("m.ModelId"), how="left")
+        .join(dbo_sensor_hubs_df.alias("sh"), col("s.SensorHubId") == col("sh.SensorHubId"), how="left")
+        .join(dbo_models_df.alias("hm"), col("sh.ModelId") == col("hm.ModelId"), how="left")
         .select(
             col("s.SensorId"),
             col("s.SensorTyId"),
             col("s.DeviceId"),
+            col("s.ModelId"),
+            col("s.SensorHubId"),
+            col("s.PhysicalIdentifier"),
+            col("s.PerEvent"),
             col("s.Active"),
             col("s.Name").alias("sensor_name"),
-            col("sty.Name").alias("sensor_type")
+            col("sty.Name").alias("sensor_type"),
+            col("m.Description").alias("model_name"),
+            col("hm.Description").alias("hub_model_name"),
+            col("sh.Name").alias("hub_name")
         )
         .alias("st")
         .join(dbo_devices_df.alias("dv"), on="DeviceId", how="left")
@@ -84,8 +108,15 @@ def raw_dimensions(
             col("st.SensorId"),
             col("st.SensorTyId"),
             col("st.DeviceId"),
+            col("st.ModelId"),
+            col("st.SensorHubId"),
+            col("st.PhysicalIdentifier"),
+            col("st.PerEvent"),
             col("st.sensor_name"),
             col("st.sensor_type"),
+            col("st.model_name"),
+            col("st.hub_model_name"),
+            col("st.hub_name"),
             col("dv.DeviceTyId"),
             col("dv.SubLocationId"),
             col("st.Active"),
@@ -97,8 +128,15 @@ def raw_dimensions(
             col("st_dv.SensorId"),
             col("st_dv.SensorTyId"),
             col("st_dv.DeviceId"),
+            col("st_dv.ModelId"),
+            col("st_dv.SensorHubId"),
+            col("st_dv.PhysicalIdentifier"),
+            col("st_dv.PerEvent"),
             col("st_dv.sensor_name"),
             col("st_dv.sensor_type"),
+            col("st_dv.model_name"),
+            col("st_dv.hub_model_name"),
+            col("st_dv.hub_name"),
             col("st_dv.DeviceTyId"),
             col("st_dv.SubLocationId"),
             col("st_dv.device_name"),
@@ -111,8 +149,15 @@ def raw_dimensions(
             col("st_dvt.SensorId"),
             col("st_dvt.SensorTyId"),
             col("st_dvt.DeviceId"),
+            col("st_dvt.ModelId"),
+            col("st_dvt.SensorHubId"),
+            col("st_dvt.PhysicalIdentifier"),
+            col("st_dvt.PerEvent"),
             col("st_dvt.sensor_name"),
             col("st_dvt.sensor_type"),
+            col("st_dvt.model_name"),
+            col("st_dvt.hub_model_name"),
+            col("st_dvt.hub_name"),
             col("st_dvt.DeviceTyId"),
             col("st_dvt.SubLocationId"),
             col("st_dvt.device_name"),
@@ -128,8 +173,15 @@ def raw_dimensions(
             col("st_dvt_sl.SensorId"),
             col("st_dvt_sl.SensorTyId"),
             col("st_dvt_sl.DeviceId"),
+            col("st_dvt_sl.ModelId"),
+            col("st_dvt_sl.SensorHubId"),
+            col("st_dvt_sl.PhysicalIdentifier"),
+            col("st_dvt_sl.PerEvent"),
             col("st_dvt_sl.sensor_name"),
             col("st_dvt_sl.sensor_type"),
+            col("st_dvt_sl.model_name"),
+            col("st_dvt_sl.hub_model_name"),
+            col("st_dvt_sl.hub_name"),
             col("st_dvt_sl.DeviceTyId"),
             col("st_dvt_sl.SubLocationId"),
             col("st_dvt_sl.device_name"),
@@ -139,7 +191,8 @@ def raw_dimensions(
             col("st_dvt_sl.sublocation_name"),
             col("st_dvt_sl.LocationId"),
             col("loca.Name").alias("location_name"),
-            col("loca.CityId")
+            col("loca.CityId"),
+            col("loca.TimeZone")
         )
         .alias("st_dvt_sl_l")
         .join(dbo_sublocation_tys_df.alias("slty"), on="SubLocationTyId", how="left")
@@ -147,8 +200,15 @@ def raw_dimensions(
             col("st_dvt_sl_l.SensorId"),
             col("st_dvt_sl_l.SensorTyId"),
             col("st_dvt_sl_l.DeviceId"),
+            col("st_dvt_sl_l.ModelId"),
+            col("st_dvt_sl_l.SensorHubId"),
+            col("st_dvt_sl_l.PhysicalIdentifier"),
+            col("st_dvt_sl_l.PerEvent"),
             col("st_dvt_sl_l.sensor_name"),
             col("st_dvt_sl_l.sensor_type"),
+            col("st_dvt_sl_l.model_name"),
+            col("st_dvt_sl_l.hub_model_name"),
+            col("st_dvt_sl_l.hub_name"),
             col("st_dvt_sl_l.DeviceTyId"),
             col("st_dvt_sl_l.SubLocationId"),
             col("st_dvt_sl_l.device_name"),
@@ -159,6 +219,7 @@ def raw_dimensions(
             col("st_dvt_sl_l.Active"),
             col("st_dvt_sl_l.location_name"),
             col("st_dvt_sl_l.CityId"),
+            col("st_dvt_sl_l.TimeZone"),
             col("slty.Name").alias("sublocation_type")
         )
         .alias("st_dvt_sl_slt")
@@ -167,8 +228,15 @@ def raw_dimensions(
             col("st_dvt_sl_slt.SensorId"),
             col("st_dvt_sl_slt.SensorTyId"),
             col("st_dvt_sl_slt.DeviceId"),
+            col("st_dvt_sl_slt.ModelId"),
+            col("st_dvt_sl_slt.SensorHubId"),
+            col("st_dvt_sl_slt.PhysicalIdentifier"),
+            col("st_dvt_sl_slt.PerEvent"),
             col("st_dvt_sl_slt.sensor_name"),
             col("st_dvt_sl_slt.sensor_type"),
+            col("st_dvt_sl_slt.model_name"),
+            col("st_dvt_sl_slt.hub_model_name"),
+            col("st_dvt_sl_slt.hub_name"),
             col("st_dvt_sl_slt.DeviceTyId"),
             col("st_dvt_sl_slt.SubLocationId"),
             col("st_dvt_sl_slt.device_name"),
@@ -179,6 +247,7 @@ def raw_dimensions(
             col("st_dvt_sl_slt.Active"),
             col("st_dvt_sl_slt.location_name"),
             col("st_dvt_sl_slt.CityId"),
+            col("st_dvt_sl_slt.TimeZone"),
             col("st_dvt_sl_slt.sublocation_type"),
             col("city.Name").alias("city_name"),
         )

@@ -1,0 +1,54 @@
+
+groups:
+  - name: blackbox_probe_alerts
+    rules:
+      - alert: EndpointDown
+        expr: probe_success{job="blackbox_probe"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Endpoint {{ $labels.instance }} caído"
+          description: >
+            El probe de {{ $labels.instance }} (user_code={{ $labels.user_code }})
+            ha fallado durante más de 3 minutos.
+
+      - alert: EndpointHighLatency
+        expr: >
+          avg_over_time(probe_duration_seconds{job="blackbox_probe"}[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latencia alta en {{ $labels.instance }}"
+          description: >
+            La latencia promedio de {{ $labels.instance }}
+            (user_code={{ $labels.user_code }}) supera 5s en los últimos 5 minutos.
+
+  - name: dagster_grpc_alerts
+    rules:
+      - alert: CodeLocationGrpcDown
+        expr: >
+          probe_success{job="blackbox_probe", instance=~"dagster-user-code-.*:\\d+"}
+          == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Code location gRPC {{ $labels.instance }} caído"
+          description: >
+            El puerto gRPC de {{ $labels.instance }} no responde.
+            El Dagster daemon no podrá ejecutar jobs de esta location.
+
+  - name: prometheus_self
+    rules:
+      - alert: BlackboxExporterDown
+        expr: up{job="blackbox_probe"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blackbox Exporter no reporta métricas"
+          description: >
+            Prometheus no puede scrapear al Blackbox Exporter.
+            Las probes de disponibilidad están detenidas.

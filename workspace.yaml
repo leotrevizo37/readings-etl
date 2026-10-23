@@ -8,6 +8,6 @@ load_from:
       port: 4002
       location_name: projectB
   - grpc_server:
-      host: projectC-dagster-user-code
-      port: 4003
-      location_name: projectC
+      host: projectD-dagster-user-code
+      port: 4004
+      location_name: projectD

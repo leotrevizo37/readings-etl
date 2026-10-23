@@ -1,5 +1,6 @@
 from dagster import SourceAsset, AssetKey
 
+
 dbo_sensors = SourceAsset(
     key=AssetKey(["projectB", "dbo_sensors"]),
     group_name="projectB",
@@ -24,27 +25,11 @@ dbo_sublocation_tys = SourceAsset(
     key=AssetKey(["projectB", "dbo_sublocation_tys"]),
     group_name="projectB",
 )
-dbo_ProgramProfileTys = SourceAsset(
-    key=AssetKey(["projectB", "dbo_ProgramProfileTys"]),
+dbo_aspnetusers = SourceAsset(
+    key=AssetKey(["projectB", "dbo_aspnetusers"]),
     group_name="projectB",
 )
-dbo_ProgramProfiles = SourceAsset(
-    key=AssetKey(["projectB", "dbo_ProgramProfiles"]),
-    group_name="projectB",
-)
-dbo_ProgramSchedules = SourceAsset(
-    key=AssetKey(["projectB", "dbo_ProgramSchedules"]),
-    group_name="projectB",
-)
-dbo_GroupSensors = SourceAsset(
-    key=AssetKey(["projectB", "dbo_GroupSensors"]),
-    group_name="projectB",
-)
-dbo_GroupHasSchedules = SourceAsset(
-    key=AssetKey(["projectB", "dbo_GroupHasSchedules"]),
-    group_name="projectB",
-)
-dbo_GroupHasSensors = SourceAsset(
-    key=AssetKey(["projectB", "dbo_GroupHasSensors"]),
+dbo_systemlogs = SourceAsset(
+    key=AssetKey(["projectB", "dbo_systemlogs"]),
     group_name="projectB",
 )

@@ -1,7 +1,7 @@
 from dagster import AssetKey, AssetSelection, define_asset_job
 
 fact_lecturas_ingestion_job = define_asset_job(
-    name="fact_lecturas_ingestion_job",
+    name="010_Sensor_lecturas_ingestion",
     selection=AssetSelection.keys(AssetKey(["projectA", "dwh_factlecturas"])),
-    tags={"job_type": "lecturas", "user_code": "projectA"},
+    tags={"job_type": "lecturas", "run_lane": "operational", "user_code_run_lane": "projectA_operational", "user_code": "projectA"},
 )

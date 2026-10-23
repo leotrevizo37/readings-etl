@@ -8,7 +8,6 @@ from ..resources import SqlServerResource, SparkResource
 
 LOCAL_TIME_SPAN_FORMAT = "yyyy-MM-dd HH:mm:ss"
 
-
 def _build_factlecturas_query(fetch_factlecturas_from: Optional[str]) -> str:
     base_query = (
         "SELECT ReadId, "
@@ -35,8 +34,6 @@ def _build_factlecturas_query(fetch_factlecturas_from: Optional[str]) -> str:
 
 
 def _restore_local_timespan(df: DataFrame) -> DataFrame:
-    # LocalTimeSpan already comes in local wall-clock time from SQL Server.
-    # Reading it as text avoids the JDBC timestamp timezone shift.
     return (
         df.withColumn(
             "LocalTimeSpan",
@@ -86,7 +83,7 @@ def factlecturas_extended(
         )
     )
 
-    if dwh_factlecturas_extended_df.rdd.isEmpty():
+    if len(dwh_factlecturas_extended_df.head(1)) == 0:
         return None
 
     return dwh_factlecturas_extended_df

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
@@ -15,7 +15,6 @@ def get_operations_timezone():
     try:
         return ZoneInfo(OPERATIONS_TIMEZONE_NAME)
     except Exception:
-        # Windows dev environments may not have tzdata installed.
         return timezone(timedelta(hours=-6), name=OPERATIONS_TIMEZONE_NAME)
 
 
@@ -28,7 +27,7 @@ def truncate_to_seconds(dt: datetime) -> datetime:
 
 def coerce_local_naive(
     dt: datetime,
-    timezone: ZoneInfo = OPERATIONS_TIMEZONE,
+    timezone: tzinfo = OPERATIONS_TIMEZONE,
 ) -> datetime:
     if dt.tzinfo is None:
         return truncate_to_seconds(dt)
@@ -61,9 +60,9 @@ def factreadings_overlap_delta() -> timedelta:
 
 
 def current_utc_timestamp(now: Optional[datetime] = None) -> datetime:
-    current = now if now is not None else datetime.now(OPERATIONS_TIMEZONE)
+    current = now if now is not None else datetime.now(timezone.utc)
     if current.tzinfo is None:
-        current = current.replace(tzinfo=OPERATIONS_TIMEZONE)
+        current = current.replace(tzinfo=timezone.utc)
     return truncate_to_seconds(
         current.astimezone(timezone.utc).replace(tzinfo=None)
     )
@@ -76,11 +75,13 @@ def build_operations_window(
     if last_loaded_at is None:
         last_loaded_at = DEFAULT_OPERATIONS_BOOTSTRAP_START
 
-    from_local = coerce_local_naive(last_loaded_at)
-    max_local_hour = current_operational_hour_start(now=now)
-    watermark_in_future = from_local > max_local_hour
+    from_time_span = coerce_local_naive(last_loaded_at, timezone.utc)
+    max_utc_hour = current_utc_timestamp(now).replace(
+        minute=0, second=0, microsecond=0
+    )
+    watermark_in_future = from_time_span > max_utc_hour
 
-    processing_anchor = min(from_local, max_local_hour)
+    processing_anchor = min(from_time_span, max_utc_hour)
     fetch_from = (
         processing_anchor.replace(minute=0, second=0, microsecond=0)
         - factreadings_overlap_delta()
@@ -88,10 +89,10 @@ def build_operations_window(
 
     return {
         "delete_from": fetch_from,
-        "delete_to_exclusive": max(from_local, max_local_hour) + timedelta(hours=1),
+        "delete_to_exclusive": max(from_time_span, max_utc_hour) + timedelta(hours=1),
         "fetch_from": fetch_from,
-        "from_local": from_local,
-        "max_local_hour": max_local_hour,
+        "from_time_span": from_time_span,
+        "max_utc_hour": max_utc_hour,
         "read_to_utc": current_utc_timestamp(now),
         "original_last_loaded_at": last_loaded_at,
         "watermark_in_future": watermark_in_future,
@@ -103,10 +104,10 @@ def resolve_operations_watermark(
     succeeded: bool,
     original_last_loaded_at: datetime,
     max_time_span: Optional[datetime],
-    max_local_hour: datetime,
+    max_utc_hour: datetime,
 ) -> datetime:
     if not succeeded:
         return original_last_loaded_at
     if max_time_span is None:
-        return max_local_hour
+        return max_utc_hour
     return max_time_span

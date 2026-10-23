@@ -86,7 +86,7 @@ def factlecturas_extended(
         )
     )
 
-    if dwh_factlecturas_extended_df.rdd.isEmpty():
+    if len(dwh_factlecturas_extended_df.head(1)) == 0:
         return None
 
     return dwh_factlecturas_extended_df
