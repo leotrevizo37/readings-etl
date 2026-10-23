@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.head_ref, 'init/') || startsWith(github.head_ref, 'feat/') || github.head_ref == 'development'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build Dagster Docker image
         run: docker build -f dagster/Dockerfile -t my-image-name:${{ github.sha }} .

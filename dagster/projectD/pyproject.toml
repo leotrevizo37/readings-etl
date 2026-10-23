@@ -1,9 +1,9 @@
 [project]
 name = "projectD"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 version = "0.1.0"
 dependencies = [
-    "dagster==1.12.6",
+    "dagster==1.13.26",
     "pyodbc>=5.3.0",
     "pyspark>=4.0.1",
 ]
@@ -31,3 +31,19 @@ registry_modules = [
 ]
 
 
+
+[tool.uv]
+constraint-dependencies = [
+    "anyio==4.15.1",
+    "urllib3==2.8.0",
+    "PyJWT==2.15.1",
+    "fsspec==2026.9.0",
+    "Mako==1.4.3",
+    "cryptography==50.0.2",
+    "protobuf==6.33.5",
+    "starlette==1.9.0",
+    "SQLAlchemy==2.1.4",
+    "grpcio==1.84.0",
+    "grpcio-health-checking==1.81.0",
+    "tzdata==2026.5",
+]

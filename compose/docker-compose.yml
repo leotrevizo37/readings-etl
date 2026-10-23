@@ -141,7 +141,7 @@ services:
     restart: "no"
 
   dagster-postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: data-dagster-postgres
     env_file:
       - .env
@@ -149,6 +149,7 @@ services:
       POSTGRES_USER: ${DAGSTER_PG_USER}
       POSTGRES_PASSWORD: ${DAGSTER_PG_PASSWORD}
       POSTGRES_DB: ${DAGSTER_PG_DB}
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - dagster_postgres_data:/var/lib/postgresql/data
     networks:
@@ -490,7 +491,7 @@ services:
     ]
 
   blackbox-exporter:
-    image: prom/blackbox-exporter:v0.28.0
+    image: prom/blackbox-exporter:v0.29.0
     container_name: data-blackbox-exporter
     command:
       - --config.file=/etc/blackbox_exporter/config.yml
@@ -517,7 +518,7 @@ services:
 
 
   prometheus:
-    image: prom/prometheus:v3.13.1
+    image: prom/prometheus:v3.15.0
     container_name: data-prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -606,7 +607,7 @@ services:
     restart: unless-stopped
 
   spark-data-init:
-    image: alpine:3.20
+    image: alpine:3.23
     user: "0:0"
     container_name: spark-data-init
     volumes:
