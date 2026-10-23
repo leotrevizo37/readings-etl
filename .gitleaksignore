@@ -139,3 +139,4 @@ dagster/projectD/tests/test_chirpstack_observability.py:hardcoded-secret-assignm
 dagster/projectD/tests/test_chirpstack_observability.py:hardcoded-secret-assignment:765
 dagster/projectD/tests/test_chirpstack_observability.py:hardcoded-secret-assignment:822
 dagster/projectD/tests/test_spark_ozone_config.py:hardcoded-secret-assignment:199
+7184e0d2875087a01e5bdcef5d94994acf146752:compose/docker-compose.yml:hardcoded-secret-assignment:210
