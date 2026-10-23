@@ -6,7 +6,7 @@ ENV_FILE := compose/.env
 
 COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
-.PHONY: help up down restart build ps lint-python test-python lint-projectA lint-projectB lint-projectC test-projectA test-projectB test-projectC
+.PHONY: help up down restart build ps lint-python test-python lint-projectA lint-projectB lint-projectD test-projectA test-projectB test-projectD
 
 help:
 	@echo "Targets:"
@@ -33,7 +33,7 @@ build:
 ps:
 	$(COMPOSE) ps
 
-lint-python: lint-projectA lint-projectB lint-projectC
+lint-python: lint-projectA lint-projectB lint-projectD
 
 lint-projectA:
 	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectA -lc "python -m pip install --quiet ruff && cd /opt/dagster/app/projectA && ruff check src tests"
@@ -41,16 +41,16 @@ lint-projectA:
 lint-projectB:
 	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectB -lc "python -m pip install --quiet ruff && cd /opt/dagster/app/projectB && ruff check src tests"
 
-lint-projectC:
-	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectC -lc "python -m pip install --quiet ruff && cd /opt/dagster/app/projectC && ruff check src tests"
+lint-projectD:
+	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectD -lc "python -m pip install --quiet ruff && cd /opt/dagster/app/projectD && ruff check src tests"
 
-test-python: test-projectA test-projectB test-projectC
+test-python: test-projectA test-projectB test-projectD
 
 test-projectA:
-	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectA -lc "cd /opt/dagster/app/projectA && python -m unittest discover tests -p 'test_*.py'"
+	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectA -lc "cd /opt/dagster/app/projectA && python -m pytest --import-mode=importlib tests"
 
 test-projectB:
-	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectB -lc "cd /opt/dagster/app/projectB && python -m unittest discover tests -p 'test_*.py'"
+	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectB -lc "cd /opt/dagster/app/projectB && python -m pytest --import-mode=importlib tests"
 
-test-projectC:
-	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectC -lc "cd /opt/dagster/app/projectC && python -m unittest discover tests -p 'test_*.py'"
+test-projectD:
+	$(COMPOSE) run --rm --no-deps --entrypoint sh dagster-user-code-projectD -lc "cd /opt/dagster/app/projectD && python -m pytest --import-mode=importlib tests"

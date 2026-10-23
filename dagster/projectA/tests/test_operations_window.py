@@ -1,13 +1,12 @@
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from projectA.operations_window import (
     DEFAULT_OPERATIONS_BOOTSTRAP_START,
-    OPERATIONS_TIMEZONE,
     build_operations_window,
-    current_operational_hour_start,
+    current_utc_timestamp,
     resolve_operations_watermark,
 )
 
@@ -26,13 +25,13 @@ class BuildOperationsWindowTests(unittest.TestCase):
         else:
             os.environ.pop("FACTREADINGS_OVERLAP_HOURS", None)
 
-    def test_uses_local_hour_boundary_for_operational_window(self) -> None:
-        now = datetime(2026, 3, 29, 16, 35, tzinfo=OPERATIONS_TIMEZONE)
+    def test_uses_utc_hour_boundary_for_operational_window(self) -> None:
+        now = datetime(2026, 3, 29, 16, 35, tzinfo=timezone.utc)
         last_loaded_at = datetime(2026, 3, 29, 14, 17)
 
         window = build_operations_window(last_loaded_at, now=now)
 
-        self.assertEqual(window["max_local_hour"], datetime(2026, 3, 29, 16, 0))
+        self.assertEqual(window["max_utc_hour"], datetime(2026, 3, 29, 16, 0))
         self.assertEqual(window["fetch_from"], datetime(2026, 3, 29, 3, 0))
         self.assertEqual(
             window["delete_to_exclusive"],
@@ -41,13 +40,13 @@ class BuildOperationsWindowTests(unittest.TestCase):
         self.assertFalse(window["watermark_in_future"])
 
     def test_future_watermark_is_clamped_for_processing_and_cleaned_up(self) -> None:
-        now = datetime(2026, 3, 29, 16, 35, tzinfo=OPERATIONS_TIMEZONE)
+        now = datetime(2026, 3, 29, 16, 35, tzinfo=timezone.utc)
         last_loaded_at = datetime(2026, 3, 29, 22, 5)
 
         window = build_operations_window(last_loaded_at, now=now)
 
         self.assertTrue(window["watermark_in_future"])
-        self.assertEqual(window["max_local_hour"], datetime(2026, 3, 29, 16, 0))
+        self.assertEqual(window["max_utc_hour"], datetime(2026, 3, 29, 16, 0))
         self.assertEqual(window["fetch_from"], datetime(2026, 3, 29, 5, 0))
         self.assertEqual(
             window["delete_to_exclusive"],
@@ -55,7 +54,7 @@ class BuildOperationsWindowTests(unittest.TestCase):
         )
 
     def test_bootstrap_window_uses_default_start(self) -> None:
-        now = datetime(2026, 3, 29, 16, 35, tzinfo=OPERATIONS_TIMEZONE)
+        now = datetime(2026, 3, 29, 16, 35, tzinfo=timezone.utc)
 
         window = build_operations_window(None, now=now)
 
@@ -70,7 +69,7 @@ class BuildOperationsWindowTests(unittest.TestCase):
 
     def test_uses_configured_factreadings_overlap_hours(self) -> None:
         os.environ["FACTREADINGS_OVERLAP_HOURS"] = "3"
-        now = datetime(2026, 3, 29, 16, 35, tzinfo=OPERATIONS_TIMEZONE)
+        now = datetime(2026, 3, 29, 16, 35, tzinfo=timezone.utc)
         last_loaded_at = datetime(2026, 3, 29, 14, 17)
 
         window = build_operations_window(last_loaded_at, now=now)
@@ -78,17 +77,16 @@ class BuildOperationsWindowTests(unittest.TestCase):
         self.assertEqual(window["fetch_from"], datetime(2026, 3, 29, 12, 0))
 
 
-class CurrentOperationalHourStartTests(unittest.TestCase):
-    def test_converts_aware_utc_now_into_local_hour_start(self) -> None:
-        utc_now = datetime(2026, 1, 15, 18, 45, 12, tzinfo=timezone.utc)
-
-        hour_start = current_operational_hour_start(now=utc_now)
-        expected = (
-            utc_now.astimezone(OPERATIONS_TIMEZONE)
-            .replace(tzinfo=None, minute=0, second=0, microsecond=0)
+class CurrentUtcTimestampTests(unittest.TestCase):
+    def test_converts_aware_now_to_utc(self) -> None:
+        offset_now = datetime(
+            2026, 1, 15, 12, 45, 12,
+            tzinfo=timezone(timedelta(hours=-6)),
         )
 
-        self.assertEqual(hour_start, expected)
+        current = current_utc_timestamp(now=offset_now)
+
+        self.assertEqual(current, datetime(2026, 1, 15, 18, 45, 12))
 
 
 class ResolveOperationsWatermarkTests(unittest.TestCase):
@@ -99,17 +97,17 @@ class ResolveOperationsWatermarkTests(unittest.TestCase):
             succeeded=False,
             original_last_loaded_at=original,
             max_time_span=datetime(2026, 3, 29, 12, 0),
-            max_local_hour=datetime(2026, 3, 29, 13, 0),
+            max_utc_hour=datetime(2026, 3, 29, 13, 0),
         )
 
         self.assertEqual(resolved, original)
 
-    def test_empty_successful_run_advances_to_current_local_hour(self) -> None:
+    def test_empty_successful_run_advances_to_current_utc_hour(self) -> None:
         resolved = resolve_operations_watermark(
             succeeded=True,
             original_last_loaded_at=datetime(2026, 3, 29, 9, 0),
             max_time_span=None,
-            max_local_hour=datetime(2026, 3, 29, 13, 0),
+            max_utc_hour=datetime(2026, 3, 29, 13, 0),
         )
 
         self.assertEqual(resolved, datetime(2026, 3, 29, 13, 0))
@@ -119,7 +117,7 @@ class ResolveOperationsWatermarkTests(unittest.TestCase):
             succeeded=True,
             original_last_loaded_at=datetime(2026, 3, 29, 9, 0),
             max_time_span=datetime(2026, 3, 29, 12, 0),
-            max_local_hour=datetime(2026, 3, 29, 13, 0),
+            max_utc_hour=datetime(2026, 3, 29, 13, 0),
         )
 
         self.assertEqual(resolved, datetime(2026, 3, 29, 12, 0))

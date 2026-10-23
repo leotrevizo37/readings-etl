@@ -27,17 +27,16 @@ def lecturas_time_hours(
             ).alias("HourStart"))
     )
 
-    sensors_df = base.select("SensorId", "DeviceId", "SensorTyId", "sensor_type", "device_type", "LocationId").distinct()
+    sensors_df = base.select("SensorId", "DeviceId", "SensorTyId", "sensor_name", "sensor_type", "device_type", "LocationId", "TimeZone").distinct()
 
     skeleton_df = sensors_df.crossJoin(hours_df)
 
     current_df = (
         skeleton_df
-        .withColumnRenamed("LocalTimeSpan", "_LocalTimeSpan")
-        .withColumnRenamed("HourStart", "LocalTimeSpan")
+        .withColumnRenamed("HourStart", "TimeSpan")
     )
 
-    if current_df.rdd.isEmpty():
+    if len(current_df.head(1)) == 0:
         return None
 
     return current_df

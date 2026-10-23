@@ -1,0 +1,135 @@
+name: Validate security
+on:
+  push:
+  pull_request:
+    branches:
+        - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: 8.29.1
+          GITLEAKS_ENABLE_COMMENTS: false
+
+      - name: Reject tracked private environment files
+        shell: python
+        run: |
+          import subprocess
+          import sys
+          from pathlib import PurePosixPath
+
+          result = subprocess.run(
+              ["git", "ls-files", "-z"],
+              check=True,
+              stdout=subprocess.PIPE,
+          )
+
+          blocked = []
+          for raw_path in result.stdout.split(b"\0"):
+              if not raw_path:
+                  continue
+              path = raw_path.decode("utf-8", errors="backslashreplace")
+              name = PurePosixPath(path).name
+              if name != ".env.example" and (
+                  name == ".env" or name.startswith(".env.")
+              ):
+                  blocked.append(path)
+
+          if blocked:
+              print("Private environment files must not be tracked. Only .env.example is allowed.")
+              for path in blocked:
+                  print(f"Blocked file: {path!r}")
+              sys.exit(1)
+
+
+  security-contract:
+    name: Verify architecture security contracts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install YAML parser
+        run: python -m pip install PyYAML==6.0.2
+
+      - name: Verify Dagster and Compose security contracts
+        shell: python
+        run: |
+          from pathlib import Path
+          import yaml
+
+          services = yaml.safe_load(
+              Path("compose/docker-compose.yml").read_text(encoding="utf-8")
+          )["services"]
+          instance = yaml.safe_load(
+              Path("dagster/dagster_home/dagster.yaml").read_text(encoding="utf-8")
+          )
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          command = services["dagster-web"]["command"]
+          require(
+              isinstance(command, list)
+              and command[0] == "dagster-webserver"
+              and "--read-only" in command,
+              "dagster-web must retain its read-only command.",
+          )
+
+          for name in ("dagster-web-admin",):
+              service = services[name]
+              ports = service.get("ports", [])
+              require(
+                  bool(ports) and all(
+                      isinstance(port, str) and port.startswith("127.0.0.1:")
+                      for port in ports
+                  ),
+                  f"{name}: published ports must remain bound to 127.0.0.1.",
+              )
+              require(
+                  "network_mode" not in service,
+                  f"{name}: network_mode requires a security review.",
+              )
+
+          mounts = services["sql-init"]["volumes"]
+          for directory in ("init", "procedures", "user_codes"):
+              require(
+                  f"../sql/{directory}:/sql/{directory}:ro" in mounts,
+                  f"sql-init: /sql/{directory} must retain its read-only mount.",
+              )
+
+          for storage in ("run_storage", "event_log_storage", "schedule_storage"):
+              password_config = instance[storage]["config"]["postgres_db"]["password"]
+              require(
+                  password_config == {"env": "DAGSTER_PG_PASSWORD"},
+                  f"{storage}: PostgreSQL password must use DAGSTER_PG_PASSWORD.",
+              )
+
+          print("Security contracts passed.")

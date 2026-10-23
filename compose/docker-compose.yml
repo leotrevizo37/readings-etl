@@ -9,6 +9,7 @@ x-dagster-common: &dagster_common
     - ../dagster/projectA:/opt/dagster/app/projectA
     - ../dagster/projectB:/opt/dagster/app/projectB
     - ../dagster/projectC:/opt/dagster/app/projectC
+    - ../dagster/projectD:/opt/dagster/app/projectD
     - ../workspace.yaml:/opt/dagster/app/workspace.yaml:ro
     - spark-data:/data
   networks:
@@ -39,6 +40,21 @@ services:
           set -eu
 
           SQLCMD=/opt/mssql-tools/bin/sqlcmd
+          SQLCMD_LOG=$$(mktemp)
+          trap 'rm -f "$$SQLCMD_LOG"' EXIT
+
+          run_sql() {
+            sql_status=0
+            "$$SQLCMD" "$$@" >"$$SQLCMD_LOG" 2>&1 || sql_status=$$?
+            cat "$$SQLCMD_LOG"
+            if [ "$$sql_status" -ne 0 ]; then
+              return "$$sql_status"
+            fi
+            if grep -Eq '^SqlState [0-9A-Z]{5},|^Sqlcmd: Error:' "$$SQLCMD_LOG"; then
+              echo "SQL client reported an error despite returning success." >&2
+              return 1
+            fi
+          }
 
           echo "Waiting for SQL Server at $${MSSQL_HOST}:$${MSSQL_PORT:-1433}..."
           until "$$SQLCMD" \
@@ -49,7 +65,7 @@ services:
             sleep 5
           done
 
-          USER_CODE_DBS="$${USER_CODE_DBS:-projectA=projectA projectB=projectB projectC=projectC}"
+          USER_CODE_DBS="$${USER_CODE_DBS:-projectA=projectA projectB=projectB projectD=projectD}"
 
           for db_spec in $$USER_CODE_DBS; do
             case "$$db_spec" in
@@ -72,7 +88,7 @@ services:
             APP_DB_IDENTIFIER=$$(printf "%s" "$$APP_DB" | sed "s/]/]]/g")
 
             echo "Ensuring database $$APP_DB exists for user_code $$USER_CODE..."
-            "$$SQLCMD" \
+            run_sql \
                 -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
                 -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
                 -d master \
@@ -83,7 +99,7 @@ services:
             for f in /sql/init/*.sql; do
               [ -e "$$f" ] || continue
               echo "==> [$$APP_DB] $$f"
-              "$$SQLCMD" \
+              run_sql \
                   -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
                   -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
                   -d"$$APP_DB" \
@@ -93,7 +109,7 @@ services:
             for f in /sql/procedures/*.sql; do
               [ -e "$$f" ] || continue
               echo "==> [$$APP_DB] $$f"
-              "$$SQLCMD" \
+              run_sql \
                   -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
                   -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
                   -d"$$APP_DB" \
@@ -103,7 +119,7 @@ services:
             for f in /sql/user_codes/"$$USER_CODE"/init/*.sql; do
               [ -e "$$f" ] || continue
               echo "==> [$$APP_DB] $$f"
-              "$$SQLCMD" \
+              run_sql \
                   -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
                   -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
                   -d"$$APP_DB" \
@@ -113,7 +129,7 @@ services:
             for f in /sql/user_codes/"$$USER_CODE"/procedures/*.sql; do
               [ -e "$$f" ] || continue
               echo "==> [$$APP_DB] $$f"
-              "$$SQLCMD" \
+              run_sql \
                   -S "$${MSSQL_HOST},$${MSSQL_PORT:-1433}" \
                   -U "$${MSSQL_USER}" -P "$${MSSQL_PASSWORD}" \
                   -d"$$APP_DB" \
@@ -161,6 +177,8 @@ services:
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       PYTHONPATH: /opt/dagster/app/projectA/src
+      SPARK_DRIVER_HOST: projectA-dagster-user-code
+      SPARK_DRIVER_BIND_ADDRESS: 0.0.0.0
       APP_DB: ${PROJECTA_DB:-projectA}
       DIM_DB: ${PROJECTA_DIM_DB:-projectA}
       ADLS_CONTAINER_NAME: ${PROJECTA_ADLS_CONTAINER_NAME:-projectA}
@@ -169,6 +187,33 @@ services:
       MSSQL_PORT: ${MSSQL_PORT:-1433}
       MSSQL_USER: ${MSSQL_USER}
       MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+      FACTREDINGSAUDITS_OVERLAP_HOURS: ${PROJECTA_DEFAULT_FACTREDINGSAUDITS_OVERLAP_HOURS:-1}
+      CHIRPSTACK_API_URL: ${PROJECTA_CHIRPSTACK_API_URL:-}
+      CHIRPSTACK_API_TOKEN: ${PROJECTA_CHIRPSTACK_API_TOKEN:-}
+      CHIRPSTACK_API_TIMEOUT_SECONDS: ${PROJECTA_CHIRPSTACK_API_TIMEOUT_SECONDS:-}
+      CHIRPSTACK_API_PAGE_SIZE: ${PROJECTA_CHIRPSTACK_API_PAGE_SIZE:-}
+      MQTT_EVENT_HISTORY_API_URL: ${PROJECTA_MQTT_EVENT_HISTORY_API_URL:-}
+      MQTT_EVENT_HISTORY_API_USER: ${PROJECTA_MQTT_EVENT_HISTORY_API_USER:-}
+      MQTT_EVENT_HISTORY_API_PASSWORD: ${PROJECTA_MQTT_EVENT_HISTORY_API_PASSWORD:-}
+      MQTT_EVENT_HISTORY_API_TIMEOUT_SECONDS: ${PROJECTA_MQTT_EVENT_HISTORY_API_TIMEOUT_SECONDS:-60}
+      MQTT_EVENT_HISTORY_API_LIMIT: ${PROJECTA_MQTT_EVENT_HISTORY_API_LIMIT:-5000}
+      MQTT_EVENT_HISTORY_API_REQUESTS_PER_MINUTE: ${PROJECTA_MQTT_EVENT_HISTORY_API_REQUESTS_PER_MINUTE:-95}
+      MQTT_EVENT_HISTORY_LOOKBACK_HOURS: ${PROJECTA_MQTT_EVENT_HISTORY_LOOKBACK_HOURS:-6}
+      MQTT_EVENT_HISTORY_REJECTED_ROW_RETENTION_DAYS: ${PROJECTA_MQTT_EVENT_HISTORY_REJECTED_ROW_RETENTION_DAYS:-30}
+      SPARK_DF_IO_BASE_PATH: ${PROJECTA_SPARK_DF_IO_BASE_PATH:-/data/dagster_io/spark_dfs/projectA}
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:${SPARK_MASTER_PORT:-7077}}
+      SPARK_MASTER_STATUS_URL: http://data-spark-master:8080/json/
+      DIMSQL_HOST: ${PROJECTA_DIMSQL_HOST:-${DIMSQL_HOST}}
+      DIMSQL_PORT: ${PROJECTA_DIMSQL_PORT:-${DIMSQL_PORT:-1433}}
+      DIMSQL_USER: ${PROJECTA_DIMSQL_USER:-${DIMSQL_USER}}
+      DIMSQL_PASSWORD: ${PROJECTA_DIMSQL_PASSWORD:-${DIMSQL_PASSWORD}}
+      SPARK_OBSERVABILITY_DRIVER_PORT: ${PROJECTA_OBSERVABILITY_SPARK_DRIVER_PORT:-37124}
+      SPARK_OBSERVABILITY_DRIVER_BLOCK_MANAGER_PORT: ${PROJECTA_OBSERVABILITY_SPARK_BLOCK_MANAGER_PORT:-37125}
+      SPARK_OBSERVABILITY_BLOCK_MANAGER_PORT: ${PROJECTA_OBSERVABILITY_SPARK_EXECUTOR_BLOCK_MANAGER_PORT:-37126}
+      SPARK_DRIVER_PORT: ${PROJECTA_SPARK_DRIVER_PORT}
+      SPARK_DRIVER_BLOCK_MANAGER_PORT: ${PROJECTA_SPARK_BLOCK_MANAGER_PORT}
+      SPARK_BLOCK_MANAGER_PORT: ${PROJECTA_SPARK_EXECUTOR_BLOCK_MANAGER_PORT:-37129}
+      SPARK_WORKER_NETWORK_TIMEOUT_SECONDS: ${SPARK_WORKER_NETWORK_TIMEOUT_SECONDS:-3}
     ports:
       - "${PROJECTA_USER_CODE_PORT:-4001}:4001"
     command: [
@@ -201,6 +246,8 @@ services:
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       PYTHONPATH: /opt/dagster/app/projectB/src
+      SPARK_DRIVER_HOST: projectB-dagster-user-code
+      SPARK_DRIVER_BIND_ADDRESS: 0.0.0.0
       APP_DB: ${PROJECTB_DB:-projectB}
       DIM_DB: ${PROJECTB_DIM_DB:-projectB}
       ADLS_CONTAINER_NAME: ${PROJECTB_ADLS_CONTAINER_NAME:-projectB}
@@ -209,6 +256,29 @@ services:
       MSSQL_PORT: ${MSSQL_PORT:-1433}
       MSSQL_USER: ${MSSQL_USER}
       MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+      FACTREDINGSAUDITS_OVERLAP_HOURS: ${PROJECTB_DEFAULT_FACTREDINGSAUDITS_OVERLAP_HOURS:-1}
+      CHIRPSTACK_API_URL: ${PROJECTB_CHIRPSTACK_API_URL:-}
+      CHIRPSTACK_API_TOKEN: ${PROJECTB_CHIRPSTACK_API_TOKEN:-}
+      CHIRPSTACK_API_TIMEOUT_SECONDS: ${PROJECTB_CHIRPSTACK_API_TIMEOUT_SECONDS:-}
+      CHIRPSTACK_API_PAGE_SIZE: ${PROJECTB_CHIRPSTACK_API_PAGE_SIZE:-}
+      MQTT_EVENT_HISTORY_API_URL: ${PROJECTB_MQTT_EVENT_HISTORY_API_URL:-}
+      MQTT_EVENT_HISTORY_API_USER: ${PROJECTB_MQTT_EVENT_HISTORY_API_USER:-}
+      MQTT_EVENT_HISTORY_API_PASSWORD: ${PROJECTB_MQTT_EVENT_HISTORY_API_PASSWORD:-}
+      MQTT_EVENT_HISTORY_API_TIMEOUT_SECONDS: ${PROJECTB_MQTT_EVENT_HISTORY_API_TIMEOUT_SECONDS:-60}
+      MQTT_EVENT_HISTORY_API_LIMIT: ${PROJECTB_MQTT_EVENT_HISTORY_API_LIMIT:-5000}
+      MQTT_EVENT_HISTORY_API_REQUESTS_PER_MINUTE: ${PROJECTB_MQTT_EVENT_HISTORY_API_REQUESTS_PER_MINUTE:-95}
+      MQTT_EVENT_HISTORY_LOOKBACK_HOURS: ${PROJECTB_MQTT_EVENT_HISTORY_LOOKBACK_HOURS:-6}
+      MQTT_EVENT_HISTORY_REJECTED_ROW_RETENTION_DAYS: ${PROJECTB_MQTT_EVENT_HISTORY_REJECTED_ROW_RETENTION_DAYS:-30}
+      SPARK_DF_IO_BASE_PATH: ${PROJECTB_SPARK_DF_IO_BASE_PATH:-/data/dagster_io/spark_dfs/projectB}
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:${SPARK_MASTER_PORT:-7077}}
+      SPARK_MASTER_STATUS_URL: http://data-spark-master:8080/json/
+      SPARK_OBSERVABILITY_DRIVER_PORT: ${PROJECTB_OBSERVABILITY_SPARK_DRIVER_PORT:-37134}
+      SPARK_OBSERVABILITY_DRIVER_BLOCK_MANAGER_PORT: ${PROJECTB_OBSERVABILITY_SPARK_BLOCK_MANAGER_PORT:-37135}
+      SPARK_OBSERVABILITY_BLOCK_MANAGER_PORT: ${PROJECTB_OBSERVABILITY_SPARK_EXECUTOR_BLOCK_MANAGER_PORT:-37136}
+      SPARK_DRIVER_PORT: ${PROJECTB_SPARK_DRIVER_PORT}
+      SPARK_DRIVER_BLOCK_MANAGER_PORT: ${PROJECTB_SPARK_BLOCK_MANAGER_PORT}
+      SPARK_BLOCK_MANAGER_PORT: ${PROJECTB_SPARK_EXECUTOR_BLOCK_MANAGER_PORT:-37139}
+      SPARK_WORKER_NETWORK_TIMEOUT_SECONDS: ${SPARK_WORKER_NETWORK_TIMEOUT_SECONDS:-3}
     ports:
       - "${PROJECTB_USER_CODE_PORT:-4002}:4002"
     command: [
@@ -229,6 +299,7 @@ services:
       start_period: 30s
 
   dagster-user-code-projectC:
+    profiles: [disabled]
     build:
       context: ..
       dockerfile: dagster/Dockerfile
@@ -249,8 +320,6 @@ services:
       MSSQL_PORT: ${MSSQL_PORT:-1433}
       MSSQL_USER: ${MSSQL_USER}
       MSSQL_PASSWORD: ${MSSQL_PASSWORD}
-    ports:
-      - "${PROJECTC_USER_CODE_PORT:-4003}:4003"
     command: [
       "dagster", "api", "grpc",
       "-h", "0.0.0.0",
@@ -268,6 +337,71 @@ services:
       retries: 10
       start_period: 40s
 
+  dagster-user-code-projectD:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: projectD-dagster-user-code
+    <<: *dagster_common
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+    working_dir: /opt/dagster/app/projectD
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      PYTHONPATH: /opt/dagster/app/projectD/src
+      SPARK_DRIVER_HOST: projectD-dagster-user-code
+      SPARK_DRIVER_BIND_ADDRESS: 0.0.0.0
+      APP_DB: ${PROJECTD_DB:-projectD}
+      DIM_DB: ${PROJECTD_DIM_DB:-projectD}
+      ADLS_CONTAINER_NAME: ${PROJECTD_ADLS_CONTAINER_NAME:-projectD}
+      FACTREADINGS_OVERLAP_HOURS: ${PROJECTD_DEFAULT_FACTREADINGS_OVERLAP_HOURS:-12}
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT:-1433}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+      FACTREDINGSAUDITS_OVERLAP_HOURS: ${PROJECTD_DEFAULT_FACTREDINGSAUDITS_OVERLAP_HOURS:-1}
+      CHIRPSTACK_API_URL: ${PROJECTD_CHIRPSTACK_API_URL:-}
+      CHIRPSTACK_API_TOKEN: ${PROJECTD_CHIRPSTACK_API_TOKEN:-}
+      CHIRPSTACK_API_TIMEOUT_SECONDS: ${PROJECTD_CHIRPSTACK_API_TIMEOUT_SECONDS:-}
+      CHIRPSTACK_API_PAGE_SIZE: ${PROJECTD_CHIRPSTACK_API_PAGE_SIZE:-}
+      MQTT_EVENT_HISTORY_API_URL: ${PROJECTD_MQTT_EVENT_HISTORY_API_URL:-}
+      MQTT_EVENT_HISTORY_API_USER: ${PROJECTD_MQTT_EVENT_HISTORY_API_USER:-}
+      MQTT_EVENT_HISTORY_API_PASSWORD: ${PROJECTD_MQTT_EVENT_HISTORY_API_PASSWORD:-}
+      MQTT_EVENT_HISTORY_API_TIMEOUT_SECONDS: ${PROJECTD_MQTT_EVENT_HISTORY_API_TIMEOUT_SECONDS:-60}
+      MQTT_EVENT_HISTORY_API_LIMIT: ${PROJECTD_MQTT_EVENT_HISTORY_API_LIMIT:-5000}
+      MQTT_EVENT_HISTORY_API_REQUESTS_PER_MINUTE: ${PROJECTD_MQTT_EVENT_HISTORY_API_REQUESTS_PER_MINUTE:-95}
+      MQTT_EVENT_HISTORY_LOOKBACK_HOURS: ${PROJECTD_MQTT_EVENT_HISTORY_LOOKBACK_HOURS:-6}
+      MQTT_EVENT_HISTORY_REJECTED_ROW_RETENTION_DAYS: ${PROJECTD_MQTT_EVENT_HISTORY_REJECTED_ROW_RETENTION_DAYS:-30}
+      SPARK_DF_IO_BASE_PATH: ${PROJECTD_SPARK_DF_IO_BASE_PATH:-/data/dagster_io/spark_dfs/projectD}
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:${SPARK_MASTER_PORT:-7077}}
+      SPARK_MASTER_STATUS_URL: http://data-spark-master:8080/json/
+      SPARK_OBSERVABILITY_DRIVER_PORT: ${PROJECTD_OBSERVABILITY_SPARK_DRIVER_PORT:-37104}
+      SPARK_OBSERVABILITY_DRIVER_BLOCK_MANAGER_PORT: ${PROJECTD_OBSERVABILITY_SPARK_BLOCK_MANAGER_PORT:-37105}
+      SPARK_OBSERVABILITY_BLOCK_MANAGER_PORT: ${PROJECTD_OBSERVABILITY_SPARK_EXECUTOR_BLOCK_MANAGER_PORT:-37106}
+      SPARK_DRIVER_PORT: ${PROJECTD_SPARK_DRIVER_PORT}
+      SPARK_DRIVER_BLOCK_MANAGER_PORT: ${PROJECTD_SPARK_BLOCK_MANAGER_PORT}
+      SPARK_BLOCK_MANAGER_PORT: ${PROJECTD_SPARK_EXECUTOR_BLOCK_MANAGER_PORT:-37109}
+      SPARK_WORKER_NETWORK_TIMEOUT_SECONDS: ${SPARK_WORKER_NETWORK_TIMEOUT_SECONDS:-3}
+    ports:
+      - "${PROJECTD_USER_CODE_PORT:-4004}:4004"
+    command: [
+      "dagster", "api", "grpc",
+      "-h", "0.0.0.0",
+      "-p", "4004",
+      "-m", "projectD.definitions"
+    ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "dagster api grpc-health-check -p 4004 -h 127.0.0.1"
+        ]
+      interval: 20s
+      timeout: 25s
+      retries: 10
+      start_period: 40s
+
   dagster-web:
     build:
       context: ..
@@ -275,11 +409,15 @@ services:
     container_name: data-dagster-web
     <<: *dagster_common
     depends_on:
+      blackbox-exporter:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
       dagster-user-code-projectA:
         condition: service_healthy
       dagster-user-code-projectB:
         condition: service_healthy
-      dagster-user-code-projectC:
+      dagster-user-code-projectD:
         condition: service_healthy
       dagster-postgres:
         condition: service_healthy
@@ -287,6 +425,37 @@ services:
         condition: service_completed_successfully
     ports:
       - "${DAGSTER_WEB_PORT:-3000}:3000"
+    command: [
+      "dagster-webserver",
+      "--read-only",
+      "-h", "0.0.0.0",
+      "-p", "3000",
+      "-w", "/opt/dagster/app/workspace.yaml"
+    ]
+
+  dagster-web-admin:
+    build:
+      context: ..
+      dockerfile: dagster/Dockerfile
+    container_name: data-dagster-web-admin
+    <<: *dagster_common
+    depends_on:
+      blackbox-exporter:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      dagster-user-code-projectA:
+        condition: service_healthy
+      dagster-user-code-projectB:
+        condition: service_healthy
+      dagster-user-code-projectD:
+        condition: service_healthy
+      dagster-postgres:
+        condition: service_healthy
+      sql-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${DAGSTER_ADMIN_WEB_PORT:-3001}:3000"
     command: [
       "dagster-webserver",
       "-h", "0.0.0.0",
@@ -301,11 +470,15 @@ services:
     container_name: data-dagster-daemon
     <<: *dagster_common
     depends_on:
+      blackbox-exporter:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
       dagster-user-code-projectA:
         condition: service_healthy
       dagster-user-code-projectB:
         condition: service_healthy
-      dagster-user-code-projectC:
+      dagster-user-code-projectD:
         condition: service_healthy
       dagster-postgres:
         condition: service_healthy
@@ -315,6 +488,66 @@ services:
       "dagster-daemon", "run",
       "-w", "/opt/dagster/app/workspace.yaml"
     ]
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.28.0
+    container_name: data-blackbox-exporter
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    ports:
+      - "127.0.0.1:${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - data-dagster
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9115/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    container_name: data-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/targets.yml:/etc/prometheus/targets.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - data-dagster
+    depends_on:
+      blackbox-exporter:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
 
   spark-master:
     user: "0:0"
@@ -386,6 +619,7 @@ services:
 volumes:
   spark-data:
   dagster_postgres_data:
+  prometheus_data:
 
 networks:
   data-dagster:

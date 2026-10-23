@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    if: startsWith(github.head_ref, 'init/') || startsWith(github.head_ref, 'feat/')
+    if: startsWith(github.head_ref, 'init/') || startsWith(github.head_ref, 'feat/') || github.head_ref == 'development'
     steps:
       - uses: actions/checkout@v4
 

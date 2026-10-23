@@ -7,9 +7,12 @@ on:
 jobs:
   test-coverage:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [projectA, projectB, projectC, projectD]
     defaults:
       run:
-        working-directory: dagster/projectA
+        working-directory: dagster/${{ matrix.project }}
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +22,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             dagster/requirements.txt
-            dagster/projectA/pyproject.toml
+            dagster/${{ matrix.project }}/pyproject.toml
 
       - uses: actions/setup-java@v4
         with:
@@ -37,13 +40,13 @@ jobs:
         env:
           PYTHONWARNINGS: ignore::ResourceWarning
         run: |
-          python -m coverage run --source=src/projectA -m unittest discover tests -p "test_*.py"
+          python -m coverage run --source=src/${{ matrix.project }} -m pytest --import-mode=importlib tests
           python -m coverage report --show-missing
           python -m coverage xml -o coverage.xml
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-coverage
-          path: dagster/projectA/coverage.xml
+          name: python-coverage-${{ matrix.project }}
+          path: dagster/${{ matrix.project }}/coverage.xml
           if-no-files-found: error

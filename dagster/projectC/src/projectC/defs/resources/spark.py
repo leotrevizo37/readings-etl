@@ -336,7 +336,7 @@ class SparkResource:
             .mode("append") \
             .jdbc(
             url=self._build_wh_path()["url"],
-            table="dwh.dimSidonProdDimensions",
+            table="dwh.dimTelemetryProdDimensions",
             properties=self._build_wh_path()["properties"]
         )
 
@@ -376,7 +376,7 @@ class SparkResource:
 
         return spark.read.jdbc(
             url=self._build_wh_path()["url"],
-            table="dwh.dimSidonProdDimensions",
+            table="dwh.dimTelemetryProdDimensions",
             properties=self._build_wh_path()["properties"]
         )
 

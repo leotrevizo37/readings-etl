@@ -1,0 +1,99 @@
+title = "Repository secret detection policy"
+
+
+
+[extend]
+useDefault = true
+
+
+
+[[rules]]
+id = "hardcoded-secret-assignment"
+description = "Hardcoded credential assigned to a common secret variable"
+
+regex = '''(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key)\s*[:=]\s*["']?([^\s"'`;,#]{8,})'''
+
+secretGroup = 1
+
+keywords = [
+  "password",
+  "passwd",
+  "pwd",
+  "secret",
+  "token",
+  "api_key",
+  "apikey",
+  "api-key",
+  "client_secret",
+  "access_key"
+]
+
+
+[[rules.allowlists]]
+regexTarget = "secret"
+
+regexes = [
+  '''^\$\{[A-Za-z_][A-Za-z0-9_]*\}$''',
+  '''^\$\{[A-Za-z_][A-Za-z0-9_]*:-\}$''',
+  '''^%[A-Za-z_][A-Za-z0-9_]*%$''',
+  '''^<[^>]+>$''',
+  '''(?i)^(?:changeme|change_me|replace_me|dummy|example|example_value|your[_-].+)$'''
+]
+
+
+[[rules.allowlists]]
+regexTarget = "line"
+
+regexes = [
+  '''^\s*password\s*=\s*os\.getenv\("[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)+",\s*(?:""|None)\),?\s*$'''
+]
+
+
+
+[[rules]]
+id = "connection-string-password"
+description = "Hardcoded password inside a database connection string"
+
+regex = '''(?i)(?:password|pwd)\s*=\s*([^; \t\r\n"']{4,})'''
+
+secretGroup = 1
+
+
+[[rules.allowlists]]
+regexTarget = "secret"
+
+regexes = [
+  '''^\$\{[A-Za-z_][A-Za-z0-9_]*\}$''',
+  '''^%[A-Za-z_][A-Za-z0-9_]*%$''',
+  '''^<[^>]+>$''',
+  '''(?i)^(?:changeme|change_me|replace_me|dummy|example|example_value|your[_-].+)$'''
+]
+
+
+[[rules.allowlists]]
+regexTarget = "line"
+
+regexes = [
+  '''^\s*password\s*=\s*os\.getenv\("[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)+",\s*(?:""|None)\),?\s*$'''
+]
+
+
+
+[[rules]]
+id = "credential-in-url"
+description = "Password embedded directly in an URI"
+
+regex = '''(?i)[a-z][a-z0-9+.-]*://[^:/\s]+:([^@/\s]{4,})@'''
+
+secretGroup = 1
+
+
+[[rules.allowlists]]
+regexTarget = "secret"
+
+regexes = [
+  '''^\$\{[A-Za-z_][A-Za-z0-9_]*\}$''',
+  '''^%[A-Za-z_][A-Za-z0-9_]*%$''',
+  '''^<[^>]+>$''',
+  '''(?i)^(?:changeme|change_me|replace_me|dummy|example|example_value|your[_-].+)$'''
+]
