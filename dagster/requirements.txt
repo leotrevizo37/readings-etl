@@ -14,7 +14,7 @@ python-dotenv==1.2.4
 SQLAlchemy==2.1.5
 grpcio==1.84.0
 grpcio-health-checking==1.85.0
-grpclib==0.4.6
+grpclib==0.4.9
 tzdata==2026.5
 pytest>=8,<10
 anyio==4.15.1
