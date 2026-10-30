@@ -607,7 +607,7 @@ services:
     restart: unless-stopped
 
   spark-data-init:
-    image: alpine:3.23
+    image: alpine:3.24
     user: "0:0"
     container_name: spark-data-init
     volumes:
